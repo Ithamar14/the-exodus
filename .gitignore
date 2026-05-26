@@ -1,0 +1,10 @@
+src/Server/bin/
+src/Server/obj/
+src/Server/Tests/bin/
+src/Server/Tests/obj/
+src/Server/wwwroot/
+src/Client/node_modules/
+src/Client/dist/
+src/Client/test-results/
+
+src/Client/test-results/

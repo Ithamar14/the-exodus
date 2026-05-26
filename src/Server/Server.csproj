@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="Tests/**/*.cs" />
+    <EmbeddedResource Remove="Tests/**/*" />
+    <None Remove="Tests/**/*" />
+    <Content Remove="Tests/**/*" />
+  </ItemGroup>
+
+  <Target Name="CopyClientDist" BeforeTargets="Build;Publish" Condition="Exists('..\Client\dist')">
+    <ItemGroup>
+      <ClientDistFiles Include="..\Client\dist\**\*" />
+    </ItemGroup>
+
+    <RemoveDir Directories="wwwroot" Condition="Exists('wwwroot')" />
+    <MakeDir Directories="wwwroot" />
+    <Copy
+      SourceFiles="@(ClientDistFiles)"
+      DestinationFiles="@(ClientDistFiles->'wwwroot/%(RecursiveDir)%(Filename)%(Extension)')" />
+  </Target>
+
+</Project>
