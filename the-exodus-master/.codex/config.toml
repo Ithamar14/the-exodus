@@ -1,0 +1,4 @@
+approvals_reviewer = "user"
+
+[projects."/work"]
+trust_level = "trusted"

@@ -1,0 +1,27 @@
+# Repo-local Codex project config (workflow conventions for this repository)
+
+[project]
+name = "desert-multiplayer-mvp"
+phase = "mvp-stabilization"
+workflow = "single-branch-offline"
+
+[agents]
+default_mode = "single_agent"
+allow_parallel_implementation = false
+
+[quality_gates]
+require_build = true
+require_tests = true
+require_visual_inspection = true
+require_manual_play_check = true
+require_pre_serve_verification = true
+require_feature_unit_tests = true
+require_server_running_before_report = true
+
+[protocol]
+require_doc_sync = true
+protocol_doc_path = "docs/protocol.md"
+
+[docs]
+product_scope = "docs/product-scope.md"
+verification_matrix = "docs/gameplay-verification.md"
