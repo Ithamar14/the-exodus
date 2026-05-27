@@ -1,5 +1,16 @@
 # Version History
 
+## v0.1.0 — Sprite-based characters & combat feel
+**Status:** Main build
+
+### What Was Built
+- Player characters rebuilt with individual PNG sprites per body part: head, torso, arm (×2), leg (×2), gun
+- `scripts/gen-sprites.mjs` generates placeholder PNGs — replace with pixel art at same dimensions
+- Head sprite is directional — flips with facing without distorting walk squish
+- Gun replaced from Graphics primitives to sprite (`gun.png`, 38×14 display size)
+- Arm swing amplitude increased to ±0.4 rad (±23°), visibly matching leg swing scale
+- Recoil animation on shoot: front arm and gun kick back ~40° over 220 ms, triggered for all players when a fireball is detected as new
+
 ## v0.0.2 — Schema-driven tuning panel
 **Status:** Main build
 

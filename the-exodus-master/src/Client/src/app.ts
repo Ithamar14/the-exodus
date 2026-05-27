@@ -214,16 +214,13 @@ class PlayerAvatar {
   private readonly shadow: Phaser.GameObjects.Ellipse;
   private readonly mannaHalo: Phaser.GameObjects.Ellipse;
   private readonly figure: Phaser.GameObjects.Container;
-  private readonly torso: Phaser.GameObjects.Rectangle;
-  private readonly head: Phaser.GameObjects.Ellipse;
-  private readonly eyeLeft: Phaser.GameObjects.Ellipse;
-  private readonly eyeRight: Phaser.GameObjects.Ellipse;
-  private readonly mouth: Phaser.GameObjects.Rectangle;
-  private readonly armBack: Phaser.GameObjects.Rectangle;
-  private readonly armFront: Phaser.GameObjects.Rectangle;
-  private readonly gun: Phaser.GameObjects.Graphics;
-  private readonly legBack: Phaser.GameObjects.Rectangle;
-  private readonly legFront: Phaser.GameObjects.Rectangle;
+  private readonly torso: Phaser.GameObjects.Image;
+  private readonly head: Phaser.GameObjects.Image;
+  private readonly armBack: Phaser.GameObjects.Image;
+  private readonly armFront: Phaser.GameObjects.Image;
+  private readonly gun: Phaser.GameObjects.Image;
+  private readonly legBack: Phaser.GameObjects.Image;
+  private readonly legFront: Phaser.GameObjects.Image;
   private readonly nameLabel: Phaser.GameObjects.Text;
   private readonly emoteLabel: Phaser.GameObjects.Text;
   private readonly liveDots: Phaser.GameObjects.Arc[];
@@ -237,6 +234,7 @@ class PlayerAvatar {
   private hasCollectedMannaThisCycle = false;
   private victoryMode = false;
   private walkPhase = 0;
+  private recoilTimer = 0;
   private emoteText = "";
   private emoteExpiresAtMs = 0;
   private readonly bobSeed: number;
@@ -278,33 +276,16 @@ class PlayerAvatar {
       return dot;
     });
 
-    this.torso = scene.add.rectangle(0, -2, 8, 26, this.bodyColor, 1).setOrigin(0.5, 0.5);
-    this.torso.setStrokeStyle(2, 0x332010, 0.25);
-    this.head = scene.add.ellipse(0, -28, 18, 20, 0xf0c8a6, 1);
-    this.head.setStrokeStyle(2, 0x332010, 0.18);
-    this.eyeLeft = scene.add.ellipse(-4, -30, 2.2, 2.2, 0x2c1c12, 1);
-    this.eyeRight = scene.add.ellipse(4, -30, 2.2, 2.2, 0x2c1c12, 1);
-    this.mouth = scene.add.rectangle(0, -24, 6, 1.8, 0x6b3a1a, 1).setOrigin(0.5, 0.5);
-    this.armBack = scene.add.rectangle(-8, -9, 4, 18, this.bodyColor, 1).setOrigin(0.5, 0.08);
-    this.armBack.setStrokeStyle(1, 0x332010, 0.18);
-    this.armFront = scene.add.rectangle(8, -9, 4, 18, this.bodyColor, 1).setOrigin(0.5, 0.08);
-    this.armFront.setStrokeStyle(1, 0x332010, 0.18);
+    this.torso   = scene.add.image(0,  -2, 'char_torso').setOrigin(0.5, 0.5 ).setDisplaySize(12, 28);
+    this.head    = scene.add.image(0, -23, 'char_head' ).setOrigin(0.5, 0.5 ).setDisplaySize(20, 22);
+    this.armBack = scene.add.image(-8, -9, 'char_arm'  ).setOrigin(0.5, 0.08).setDisplaySize(8,  20);
+    this.armFront= scene.add.image( 8, -9, 'char_arm'  ).setOrigin(0.5, 0.08).setDisplaySize(8,  20);
 
-    // Gun — grip origin at (0,0), barrel points right (+x). Follows armFront each frame.
-    this.gun = scene.add.graphics();
-    this.gun.fillStyle(0x666666, 1);
-    this.gun.fillRect(1, -5, 15, 3);   // barrel
-    this.gun.fillStyle(0x444444, 1);
-    this.gun.fillRect(-1, -3, 11, 6);  // slide / frame
-    this.gun.fillStyle(0x222222, 1);
-    this.gun.fillRect(0, 3, 5, 7);     // grip
-    this.gun.fillStyle(0x999999, 0.7);
-    this.gun.fillRect(14, -5, 2, 3);   // muzzle highlight
+    // Gun — wrist pivot at origin row 5 of sprite. Barrel points right (+x). Follows armFront each frame.
+    this.gun = scene.add.image(0, 0, 'char_gun').setOrigin(0, 5 / 14).setDisplaySize(38, 14);
 
-    this.legBack = scene.add.rectangle(-5, 12, 4, 20, this.bodyColor, 1).setOrigin(0.5, 0.08);
-    this.legBack.setStrokeStyle(1, 0x332010, 0.18);
-    this.legFront = scene.add.rectangle(5, 12, 4, 20, this.bodyColor, 1).setOrigin(0.5, 0.08);
-    this.legFront.setStrokeStyle(1, 0x332010, 0.18);
+    this.legBack = scene.add.image(-5, 12, 'char_leg').setOrigin(0.5, 0.08).setDisplaySize(8, 22);
+    this.legFront= scene.add.image( 5, 12, 'char_leg').setOrigin(0.5, 0.08).setDisplaySize(8, 22);
 
     this.figure.add([
       this.legBack,
@@ -314,9 +295,6 @@ class PlayerAvatar {
       this.armFront,
       this.gun,
       this.head,
-      this.eyeLeft,
-      this.eyeRight,
-      this.mouth
     ]);
     this.root.add([this.shadow, this.mannaHalo, this.figure, ...this.liveDots, this.nameLabel, this.emoteLabel]);
     this.sync(view);
@@ -378,7 +356,8 @@ class PlayerAvatar {
       this.figure.rotation = 0;
       this.root.rotation = 0;
       this.torso.y = -2;
-      this.head.y = -28;
+      this.head.y = -23;
+      this.head.scaleX = 1; // figure.scaleX = facing, so combined = facing
     } else {
       this.root.scaleX = 1;
       this.root.scaleY = 1;
@@ -389,12 +368,9 @@ class PlayerAvatar {
       this.figure.rotation = bodyLean;
       this.root.rotation = 0;
       this.torso.y = moving ? -2 + (bob * 0.6) : -2 + (bodyBob * 0.85);
-      this.head.y = moving ? -28 + (bob * 0.15) : -28 + (bodyBob * 0.78);
+      this.head.y = moving ? -23 + (bob * 0.15) : -23 + (bodyBob * 0.78);
+      this.head.scaleX = 1 / bodySquish; // cancel container squish → effective scaleX = facing
     }
-
-    this.eyeLeft.y = this.head.y - 2;
-    this.eyeRight.y = this.head.y - 2;
-    this.mouth.y = this.head.y + 4;
 
     if (this.victoryMode && this.isWinner) {
       const seed = this.bobSeed * 10;
@@ -403,8 +379,8 @@ class PlayerAvatar {
       this.legBack.rotation = Math.sin((nowMs / 72) + seed + 3.3) * 2.5;
       this.legFront.rotation = Math.sin((nowMs / 66) + seed + 4.7) * 2.5;
     } else if (moving) {
-      this.armBack.rotation = -step * 0.07;
-      this.armFront.rotation = step * 0.07;
+      this.armBack.rotation = -step * 0.4;
+      this.armFront.rotation = step * 0.4;
       this.legBack.rotation = step * 0.72;
       this.legFront.rotation = -step * 0.72;
     } else {
@@ -414,10 +390,17 @@ class PlayerAvatar {
       this.legFront.rotation = 0;
     }
 
-    // Track gun to armFront's hand (bottom of arm, 16.56px from its pivot at (8,-9))
+    if (this.recoilTimer > 0) {
+      this.recoilTimer = Math.max(0, this.recoilTimer - deltaMs);
+      const progress = this.recoilTimer / 220;
+      const kick = Math.sin(progress * Math.PI / 2) * 0.7;
+      this.armFront.rotation -= kick;
+    }
+
+    // Track gun to armFront's hand: arm is 20px tall, pivot at 0.08 → 18.4px to bottom
     const armR = this.armFront.rotation;
-    this.gun.x = 8 - 16.56 * Math.sin(armR);
-    this.gun.y = -9 + 16.56 * Math.cos(armR);
+    this.gun.x = 8 - 18.4 * Math.sin(armR);
+    this.gun.y = -9 + 18.4 * Math.cos(armR);
     this.gun.rotation = armR;
     this.gun.setVisible(this.isAlive && !this.victoryMode);
 
@@ -461,6 +444,10 @@ class PlayerAvatar {
     this.emoteLabel.setText(emote);
     this.emoteLabel.setAlpha(1);
     this.emoteLabel.setScale(1.08);
+  }
+
+  public triggerRecoil(): void {
+    this.recoilTimer = 220;
   }
 
   public bump(impulseX: number, impulseY: number): void {
@@ -578,11 +565,11 @@ class PlayerAvatar {
   }
 
   private applyColors(): void {
-    this.torso.setFillStyle(this.bodyColor, 1);
-    this.armBack.setFillStyle(this.bodyColor, 1);
-    this.armFront.setFillStyle(this.bodyColor, 1);
-    this.legBack.setFillStyle(this.bodyColor, 1);
-    this.legFront.setFillStyle(this.bodyColor, 1);
+    this.torso.setTint(this.bodyColor);
+    this.armBack.setTint(this.bodyColor);
+    this.armFront.setTint(this.bodyColor);
+    this.legBack.setTint(this.bodyColor);
+    this.legFront.setTint(this.bodyColor);
   }
 }
 
@@ -1004,6 +991,15 @@ class DesertScene extends Phaser.Scene {
     graphics.fillEllipse(1000, WORLD_HEIGHT - 85, 380, 120);
     graphics.generateTexture("desert-bg", WORLD_WIDTH, WORLD_HEIGHT);
     graphics.destroy();
+    // Sprite files live in public/sprites/ — replace with your own pixel art at the same sizes.
+    // Sizes: head 20×22, torso 12×28, arm 8×20, leg 8×22 (px)
+    // Torso/arms/legs are tinted per player colour — draw them white/light for best results.
+    // Head is not tinted — draw it with the intended face colours.
+    this.load.image('char_head',  'sprites/head.png');
+    this.load.image('char_torso', 'sprites/torso.png');
+    this.load.image('char_arm',   'sprites/arm.png');
+    this.load.image('char_leg',   'sprites/leg.png');
+    this.load.image('char_gun',   'sprites/gun.png');
   }
 
   public create(): void {
@@ -1095,6 +1091,7 @@ class DesertScene extends Phaser.Scene {
         existing.y = fb.y;
       } else {
         this.fireballs.set(fb.id, { x: fb.x, y: fb.y, dirX: fb.dirX, trail: [], trailTimer: 0 });
+        this.avatars.get(fb.ownerId)?.triggerRecoil();
       }
     }
   }
@@ -1431,6 +1428,7 @@ class GameClient {
       type: Phaser.AUTO,
       parent: this.ui.gameRoot,
       backgroundColor: "#dca15a",
+      pixelArt: true,
       scale: {
         mode: Phaser.Scale.FIT,
         autoCenter: Phaser.Scale.CENTER_BOTH,
