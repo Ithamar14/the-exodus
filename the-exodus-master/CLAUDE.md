@@ -88,7 +88,9 @@ VERSION_HISTORY.md
 
 **Schema-driven tuning panel:** Any `GameRules` property tagged `[Tunable(...)]` automatically appears in the host's settings panel. Changes apply live without restart. Settings persist to `gamerules.json` (gitignored).
 
-**Sprite system:** Each player body part is a separate `Phaser.GameObjects.Image`. Torso, arms, and legs are white-base PNGs tinted per player colour at runtime via `setTint()`. The head is not tinted. The gun is a separate sprite attached to the front arm.
+**Sprite system:** Each player body part is a separate `Phaser.GameObjects.Image`. The head and gun are not tinted. The sprites live in `public/sprites/` and are committed to the repo.
+
+**Sprite rule — always ask:** Whenever adding any new visual object (Graphics primitive, shape, icon, indicator, effect, etc.), always ask the user: *"Should I add a placeholder sprite PNG for this to `public/sprites/`?"* before implementing it as a programmatic drawing. Examples of things that should prompt this question: fireballs, life/health indicators, manna orbs, emote bubbles, UI icons, particle effects.
 
 **Character rendering (PlayerAvatar in app.ts):**
 - `figure` container: `scaleX = facingDir * bodySquish`
