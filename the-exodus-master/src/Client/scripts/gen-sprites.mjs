@@ -100,17 +100,57 @@ function gunPx(x, y) {
   return [0, 0, 0, 0]; // transparent
 }
 
+// fireball.png  36×36  — concentric glow: yellow core → orange → red fringe, transparent outside
+function fireballPx(x, y) {
+  const cx = 17.5, cy = 17.5;
+  const d = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2);
+  if (d > 17)  return [0, 0, 0, 0];
+  const t = d / 17;
+  if (t < 0.27) return [255, 238, 136, 255]; // yellow core
+  if (t < 0.56) return [255, 102,   0, 230]; // orange mid
+  if (t < 0.80) return [255,  68,   0, 150]; // dark orange
+  return [200, 40, 0, Math.round((1 - t) / 0.2 * 80)]; // faint red fringe
+}
+
+// life_dot.png  10×10  — white circle with grey outline (tinted red/grey at runtime)
+function lifeDotPx(x, y) {
+  const d = Math.sqrt((x - 4.5) ** 2 + (y - 4.5) ** 2);
+  if (d > 4.5) return [0, 0, 0, 0];
+  if (d > 3.5) return [150, 150, 150, 255]; // outline
+  return [255, 255, 255, 255];               // white base — tinted at runtime
+}
+
+// platform.png  64×26  — surface stripe (y 0-5), body (y 6-19), underside shadow (y 20-25)
+function platformPx(x, y) {
+  if (y <= 1) return [100,  60,  20, 255]; // top edge
+  if (y <= 5) return [154,  95,  46, 255]; // dark surface
+  if (y === 6) return [212, 164,  98, 255]; // highlight stripe
+  if (y <= 19) return [180, 110,  60, 255]; // body
+  return [120, 70, 30, Math.round((1 - (y - 20) / 5) * 180)]; // fading underside
+}
+
 // ── Write files ───────────────────────────────────────────────────────────────
 
-mkdirSync('public/sprites', { recursive: true });
-writeFileSync('public/sprites/head.png',  makePNG(20, 22, headPx));
-writeFileSync('public/sprites/torso.png', makePNG(12, 28, torsoPx));
-writeFileSync('public/sprites/arm.png',   makePNG( 8, 20, armPx));
-writeFileSync('public/sprites/leg.png',   makePNG( 8, 22, legPx));
-writeFileSync('public/sprites/gun.png',   makePNG(18, 14, gunPx));
+// scale2x: doubles canvas size of any pixel function without changing shapes
+const scale2x = (fn) => (x, y) => fn(x / 2, y / 2);
 
-console.log('Wrote public/sprites/head.png  (20×22)');
-console.log('Wrote public/sprites/torso.png (12×28)');
-console.log('Wrote public/sprites/arm.png   (8×20)');
-console.log('Wrote public/sprites/leg.png   (8×22)');
-console.log('Wrote public/sprites/gun.png   (18×14)');
+mkdirSync('public/sprites', { recursive: true });
+// Character body parts — 2× resolution for detailed pixel art; display sizes in app.ts unchanged
+writeFileSync('public/sprites/head.png',  makePNG(40, 44, scale2x(headPx)));
+writeFileSync('public/sprites/torso.png', makePNG(24, 56, scale2x(torsoPx)));
+writeFileSync('public/sprites/arm.png',   makePNG(16, 40, scale2x(armPx)));
+writeFileSync('public/sprites/leg.png',   makePNG(16, 44, scale2x(legPx)));
+writeFileSync('public/sprites/gun.png',   makePNG(36, 28, scale2x(gunPx)));
+// Other sprites — unchanged
+writeFileSync('public/sprites/fireball.png', makePNG(36, 36, fireballPx));
+writeFileSync('public/sprites/life_dot.png', makePNG(10, 10, lifeDotPx));
+writeFileSync('public/sprites/platform.png', makePNG(64, 26, platformPx));
+
+console.log('Wrote public/sprites/head.png      (40×44,  2× — display 20×22)');
+console.log('Wrote public/sprites/torso.png     (24×56,  2× — display 12×28)');
+console.log('Wrote public/sprites/arm.png       (16×40,  2× — display 8×20)');
+console.log('Wrote public/sprites/leg.png       (16×44,  2× — display 8×22)');
+console.log('Wrote public/sprites/gun.png       (36×28,  2× — display 38×14)');
+console.log('Wrote public/sprites/fireball.png  (36×36)');
+console.log('Wrote public/sprites/life_dot.png  (10×10)');
+console.log('Wrote public/sprites/platform.png  (64×26)');

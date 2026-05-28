@@ -1,5 +1,28 @@
 # Version History
 
+## v0.1.1 — Level editor, sprite-driven character model
+**Status:** Main build
+
+### What Was Built
+- **Level editor** redesigned as a floating right-side panel, opened from a button in the settings menu
+  - Add Platform toggle: when ON, each click spawns a platform; when OFF, click to select / drag to move / corner-drag to resize
+  - Selected platform highlighted in yellow; Delete key removes it
+  - Save / load map controls in the same panel
+- **Platform hitbox sync**: drag, add, and delete all call `ApplyPlatforms` to keep server physics in sync in real time (`ApplyPlatforms` hub method + `TryApplyPlatforms` on `GameWorld`)
+- **PlayerSize tunable** added to `GameRules` ("Players" category, 0.25–3.0, default 1.0)
+  - Server physics (`PlayerHalfHeight`, `EffectiveGroundY`) scale with it
+  - Client reads it from `RulesSchema` and applies `root.scaleX/Y = PlayerSize` to all player avatars
+- **Sprite-driven character layout**: `setDisplaySize()` removed from all body parts — sprites render at natural PNG dimensions
+  - All body-part positions (head, arms, legs, dots, labels, halo) are computed proportionally from sprite dimensions in the constructor; no hardcoded pixel offsets remain
+  - Gun wrist-tracking distance derived from arm sprite height (`armFront.height × 0.92`)
+  - Shadow projects to the fixed ground surface (Y=707) correctly at any `PlayerSize`
+- **Fireball sprite** flips horizontally to face the direction of travel
+
+### Bug Fixes
+- Drag editor state was reset every server tick (editor interaction re-initialized from `handleSnapshot`); cursor flickered and selection was lost immediately
+- Deleting a platform removed the interaction border but left the sprite visible
+- Saving a map had no effect on server physics (hitboxes remained at original positions)
+
 ## v0.1.0 — Sprite-based characters & combat feel
 **Status:** Main build
 

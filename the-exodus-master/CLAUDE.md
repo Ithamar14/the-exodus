@@ -99,13 +99,16 @@ VERSION_HISTORY.md
 - Recoil animation: `triggerRecoil()` called when a new fireball is detected for that player
 
 **Sprite dimensions:**
-| Sprite | Display size | Origin |
-|--------|-------------|--------|
-| head   | 20 × 22     | (0.5, 0.5) |
-| torso  | 12 × 28     | (0.5, 0.5) |
-| arm    | 8 × 20      | (0.5, 0.08) |
-| leg    | 8 × 22      | (0.5, 0.08) |
-| gun    | 38 × 14     | (0, 5/14) |
+| Sprite      | Display size | Origin     | Notes |
+|-------------|-------------|------------|-------|
+| head        | 20 × 22     | (0.5, 0.5) | not tinted |
+| torso       | 12 × 28     | (0.5, 0.5) | |
+| arm         | 8 × 20      | (0.5, 0.08)| ×2, shoulder pivot |
+| leg         | 8 × 22      | (0.5, 0.08)| ×2, hip pivot |
+| gun         | 38 × 14     | (0, 5/14)  | tracks armFront each frame |
+| fireball    | 36 × 36     | (0.5, 0.5) | sprite per active fireball; trail still drawn with Graphics |
+| life_dot    | 10 × 10     | (0.5, 0.5) | tinted red (alive) or grey (spent) |
+| platform    | 64 × 26     | (0.5, 0)   | stretched to platform width via setDisplaySize |
 
 ---
 

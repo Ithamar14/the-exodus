@@ -21,6 +21,9 @@ public sealed record GameRules
     [Tunable("Invincibility Duration (s)", "Players", 0f, 5f, 0.1f)]
     public float InvincibilitySeconds { get; init; } = 1.0f;
 
+    [Tunable("Player Size", "Players", 0.25f, 3.0f, 0.05f)]
+    public float PlayerSize { get; init; } = 1.0f;
+
     // ── Movement ──────────────────────────────────────────────────────────
     [Tunable("Walk Speed — physics (px/s)", "Movement", 50f, 800f, 10f)]
     public float WalkSpeed { get; init; } = 220f;

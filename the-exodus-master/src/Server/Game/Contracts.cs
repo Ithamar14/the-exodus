@@ -126,6 +126,27 @@ public sealed class UpdateRulesRequest
 
 public sealed record RulesUpdateRejected(string Reason);
 
+public sealed record PlatformDto(float Cx, float SurfaceY, float Width);
+public sealed record PlatformsUpdatedPayload(IReadOnlyList<PlatformDto> Platforms);
+public sealed record MapListPayload(IReadOnlyList<string> Names);
+public sealed record MapActionRejected(string Action, string Reason);
+
+public sealed class SaveMapRequest
+{
+    public string Name { get; set; } = string.Empty;
+    public List<PlatformDto> Platforms { get; set; } = new();
+}
+
+public sealed class ApplyPlatformsRequest
+{
+    public List<PlatformDto> Platforms { get; set; } = new();
+}
+
+public sealed class LoadMapRequest
+{
+    public string Name { get; set; } = string.Empty;
+}
+
 public sealed record PlayerSnapshot(
     string Id,
     string Name,

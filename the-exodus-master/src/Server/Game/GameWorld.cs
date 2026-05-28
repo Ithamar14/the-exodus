@@ -9,20 +9,21 @@ public sealed class GameWorld
     public const int MaxPlayers = 6;
     public const float WorldWidth = 1024f;
     public const float WorldHeight = 768f;
-    public const float GroundY = WorldHeight - 88f; // player center Y when standing (feet at GroundY+27=707)
-    private const float PlayerHalfHeight = 27f;     // offset from center to feet
+    public const float GroundY = WorldHeight - 88f; // default ground Y at PlayerSize=1 (feet at 707)
+    private float PlayerHalfHeight => 27f * _rules.PlayerSize;
+    private float EffectiveGroundY => WorldHeight - 61f - PlayerHalfHeight;
 
     // (centerX, surfaceY, width) — surfaceY is the top edge; player center when standing = surfaceY - PlayerHalfHeight
-    // Keep in sync with client-side PLATFORMS in app.ts
-    public static readonly (float CenterX, float SurfaceY, float Width)[] Platforms =
+    public static readonly (float CenterX, float SurfaceY, float Width)[] DefaultPlatforms =
     [
-        (150f,  597f, 200f),   // left low        player Y=570
-        (512f,  587f, 180f),   // center low       player Y=560
-        (850f,  597f, 200f),   // right low        player Y=570
-        (280f,  447f, 140f),   // left mid         player Y=420  (reachable from left low)
-        (730f,  457f, 140f),   // right mid        player Y=430  (reachable from right low)
-        (512f,  337f, 120f),   // top center       player Y=310  (reachable from mid platforms)
+        (150f,  597f, 200f),   // left low
+        (512f,  587f, 180f),   // center low
+        (850f,  597f, 200f),   // right low
+        (280f,  447f, 140f),   // left mid
+        (730f,  457f, 140f),   // right mid
+        (512f,  337f, 120f),   // top center
     ];
+    private (float CenterX, float SurfaceY, float Width)[] _platforms = DefaultPlatforms;
     private static readonly HashSet<string> AllowedEmotes = new(StringComparer.OrdinalIgnoreCase)
     {
         "dove",
@@ -38,7 +39,7 @@ public sealed class GameWorld
         "#2a9d8f",
         "#8d6cab",
         "#f4a261",
-        "#4ecdc4"
+        "#29d1c5"
     ];
 
     public enum RoundPhase
@@ -498,9 +499,9 @@ public sealed class GameWorld
         player.X = Math.Clamp(player.X, 0f, WorldWidth);
         var newFeetY = player.Y + PlayerHalfHeight;
 
-        if (player.Y >= GroundY)
+        if (player.Y >= EffectiveGroundY)
         {
-            player.Y = GroundY;
+            player.Y = EffectiveGroundY;
             player.VelocityY = 0f;
             player.IsGrounded = true;
         }
@@ -511,7 +512,7 @@ public sealed class GameWorld
             // One-way platform landing: only triggers when falling onto the top surface
             if (player.VelocityY >= 0f)
             {
-                foreach (var (cx, surfaceY, width) in Platforms)
+                foreach (var (cx, surfaceY, width) in _platforms)
                 {
                     if (prevFeetY > surfaceY || newFeetY < surfaceY) continue;
                     if (player.X < cx - width * 0.5f || player.X > cx + width * 0.5f) continue;
@@ -1112,8 +1113,8 @@ public sealed class GameWorld
         var minX = Math.Min(_rules.MannaSpawnMarginFraction * WorldWidth, WorldWidth - (_rules.MannaSpawnMarginFraction * WorldWidth));
         var maxX = Math.Max(_rules.MannaSpawnMarginFraction * WorldWidth, WorldWidth - (_rules.MannaSpawnMarginFraction * WorldWidth));
         // Spawn within jump reach above ground so players can collect by walking or jumping
-        var minY = GroundY - 160f;
-        var maxY = GroundY;
+        var minY = EffectiveGroundY - 160f;
+        var maxY = EffectiveGroundY;
 
         for (var index = 0; index < _rules.MannaPickupCount; index += 1)
         {
@@ -1313,6 +1314,109 @@ public sealed class GameWorld
         }
 
         return newRules;
+    }
+
+    public IReadOnlyList<PlatformDto> GetPlatforms()
+    {
+        lock (_sync)
+        {
+            return _platforms.Select(p => new PlatformDto(p.CenterX, p.SurfaceY, p.Width)).ToArray();
+        }
+    }
+
+    public (bool Success, string? Reason) TryApplyPlatforms(string connectionId, List<PlatformDto> platforms)
+    {
+        lock (_sync)
+        {
+            if (_phase == RoundPhase.Active)
+                return (false, "round_active");
+
+            if (!TryGetPlayerByConnection(connectionId, out var player) || player.Id != _starterPlayerId)
+                return (false, "not_authorized");
+
+            _platforms = platforms.Select(p => (p.Cx, p.SurfaceY, p.Width)).ToArray();
+        }
+        return (true, null);
+    }
+
+    public (bool Success, string? Reason) TrySaveMap(string connectionId, string name, List<PlatformDto> platforms)
+    {
+        if (!IsValidMapName(name))
+            return (false, "invalid_name");
+
+        lock (_sync)
+        {
+            if (_phase == RoundPhase.Active)
+                return (false, "round_active");
+
+            if (!TryGetPlayerByConnection(connectionId, out var player) || player.Id != _starterPlayerId)
+                return (false, "not_authorized");
+
+            _platforms = platforms.Select(p => (p.Cx, p.SurfaceY, p.Width)).ToArray();
+        }
+
+        try
+        {
+            Directory.CreateDirectory("maps");
+            var json = JsonSerializer.Serialize(platforms, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(Path.Combine("maps", $"{name}.json"), json);
+        }
+        catch { }
+
+        return (true, null);
+    }
+
+    public (bool Success, string? Reason) TryLoadMap(string connectionId, string name)
+    {
+        if (!IsValidMapName(name))
+            return (false, "invalid_name");
+
+        lock (_sync)
+        {
+            if (_phase == RoundPhase.Active)
+                return (false, "round_active");
+
+            if (!TryGetPlayerByConnection(connectionId, out var player) || player.Id != _starterPlayerId)
+                return (false, "not_authorized");
+        }
+
+        List<PlatformDto>? loaded;
+        try
+        {
+            var path = Path.Combine("maps", $"{name}.json");
+            if (!File.Exists(path)) return (false, "not_found");
+            var json = File.ReadAllText(path);
+            loaded = JsonSerializer.Deserialize<List<PlatformDto>>(json);
+            if (loaded is null) return (false, "invalid_file");
+        }
+        catch { return (false, "invalid_file"); }
+
+        lock (_sync)
+        {
+            _platforms = loaded.Select(p => (p.Cx, p.SurfaceY, p.Width)).ToArray();
+        }
+
+        return (true, null);
+    }
+
+    public IReadOnlyList<string> ListMaps()
+    {
+        try
+        {
+            if (!Directory.Exists("maps")) return Array.Empty<string>();
+            return Directory.GetFiles("maps", "*.json")
+                .Select(Path.GetFileNameWithoutExtension)
+                .Where(n => n is not null)
+                .Order()
+                .ToArray()!;
+        }
+        catch { return Array.Empty<string>(); }
+    }
+
+    private static bool IsValidMapName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name.Length > 40) return false;
+        return name.All(c => char.IsLetterOrDigit(c) || c == ' ' || c == '-' || c == '_');
     }
 
     private static void PersistRules(GameRules rules)

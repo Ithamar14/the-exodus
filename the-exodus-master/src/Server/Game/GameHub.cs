@@ -75,6 +75,10 @@ public sealed class GameHub(GameWorld world) : Hub
     {
         var schema = _world.GetRulesSchema();
         await Clients.Caller.SendAsync("RulesSchema", new RulesSchemaPayload(schema));
+        var platforms = _world.GetPlatforms();
+        await Clients.Caller.SendAsync("PlatformsUpdated", new PlatformsUpdatedPayload(platforms));
+        var maps = _world.ListMaps();
+        await Clients.Caller.SendAsync("MapList", new MapListPayload(maps));
     }
 
     public async Task UpdateRules(UpdateRulesRequest request)
@@ -87,6 +91,50 @@ public sealed class GameHub(GameWorld world) : Hub
         }
 
         await Clients.All.SendAsync("RulesSchema", new RulesSchemaPayload(result.Schema!));
+    }
+
+    public async Task GetPlatforms()
+    {
+        var platforms = _world.GetPlatforms();
+        await Clients.Caller.SendAsync("PlatformsUpdated", new PlatformsUpdatedPayload(platforms));
+        var maps = _world.ListMaps();
+        await Clients.Caller.SendAsync("MapList", new MapListPayload(maps));
+    }
+
+    public async Task ApplyPlatforms(ApplyPlatformsRequest request)
+    {
+        var result = _world.TryApplyPlatforms(Context.ConnectionId, request.Platforms);
+        if (!result.Success) return;
+        var platforms = _world.GetPlatforms();
+        await Clients.All.SendAsync("PlatformsUpdated", new PlatformsUpdatedPayload(platforms));
+    }
+
+    public async Task SaveMap(SaveMapRequest request)
+    {
+        var result = _world.TrySaveMap(Context.ConnectionId, request.Name, request.Platforms);
+        if (!result.Success)
+        {
+            await Clients.Caller.SendAsync("MapActionRejected", new MapActionRejected("save", result.Reason ?? "unknown"));
+            return;
+        }
+
+        var platforms = _world.GetPlatforms();
+        await Clients.All.SendAsync("PlatformsUpdated", new PlatformsUpdatedPayload(platforms));
+        var maps = _world.ListMaps();
+        await Clients.Caller.SendAsync("MapList", new MapListPayload(maps));
+    }
+
+    public async Task LoadMap(LoadMapRequest request)
+    {
+        var result = _world.TryLoadMap(Context.ConnectionId, request.Name);
+        if (!result.Success)
+        {
+            await Clients.Caller.SendAsync("MapActionRejected", new MapActionRejected("load", result.Reason ?? "unknown"));
+            return;
+        }
+
+        var platforms = _world.GetPlatforms();
+        await Clients.All.SendAsync("PlatformsUpdated", new PlatformsUpdatedPayload(platforms));
     }
 
     public override Task OnDisconnectedAsync(Exception? exception)

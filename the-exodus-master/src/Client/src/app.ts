@@ -67,6 +67,13 @@ type UiRefs = {
   tuningFields: HTMLDivElement;
   tuningApply: HTMLButtonElement;
   tuningNotice: HTMLDivElement;
+  editorOverlay: HTMLElement;
+  editorAddToggle: HTMLButtonElement;
+  editorMapName: HTMLInputElement;
+  editorSaveBtn: HTMLButtonElement;
+  editorLoadSelect: HTMLSelectElement;
+  editorLoadBtn: HTMLButtonElement;
+  editorNotice: HTMLDivElement;
 };
 
 type SceneHooks = {
@@ -99,15 +106,16 @@ type SceneDebugState = {
   avatars: AvatarDebugState[];
 };
 
-// Must match GameWorld.Platforms in GameWorld.cs: { cx, surfaceY, w }
-const PLATFORMS = [
-  { cx: 150, sy: 597, w: 200 },
-  { cx: 512, sy: 587, w: 180 },
-  { cx: 850, sy: 597, w: 200 },
-  { cx: 280, sy: 447, w: 140 },
-  { cx: 730, sy: 457, w: 140 },
-  { cx: 512, sy: 337, w: 120 },
-] as const;
+type PlatformDto = { cx: number; surfaceY: number; width: number };
+
+const DEFAULT_PLATFORMS: PlatformDto[] = [
+  { cx: 150, surfaceY: 597, width: 200 },
+  { cx: 512, surfaceY: 587, width: 180 },
+  { cx: 850, surfaceY: 597, width: 200 },
+  { cx: 280, surfaceY: 447, width: 140 },
+  { cx: 730, surfaceY: 457, width: 140 },
+  { cx: 512, surfaceY: 337, width: 120 },
+];
 
 type FireballVisual = {
   x: number;
@@ -115,8 +123,10 @@ type FireballVisual = {
   dirX: number;
   trail: Array<{ x: number; y: number }>;
   trailTimer: number;
+  sprite: Phaser.GameObjects.Image;
 };
 let FIREBALL_SPEED = 680;        // px/s — kept in sync with server FireballSpeed rule
+let PLAYER_SIZE = 1.0;           // scale factor — kept in sync with server PlayerSize rule
 const FIREBALL_TRAIL_EVERY = 3;  // frames between trail samples
 const FIREBALL_TRAIL_MAX = 10;   // how many trail points to keep
 
@@ -223,7 +233,7 @@ class PlayerAvatar {
   private readonly legFront: Phaser.GameObjects.Image;
   private readonly nameLabel: Phaser.GameObjects.Text;
   private readonly emoteLabel: Phaser.GameObjects.Text;
-  private readonly liveDots: Phaser.GameObjects.Arc[];
+  private readonly liveDots: Phaser.GameObjects.Image[];
   private targetX: number;
   private targetY: number;
   private facingDir = 1;
@@ -238,13 +248,17 @@ class PlayerAvatar {
   private emoteText = "";
   private emoteExpiresAtMs = 0;
   private readonly bobSeed: number;
-  private bodyColor: number;
+  private torsoBaseY = 0;
+  private headBaseY = 0;
+  private nameLabelBaseY = 0;
+  private emoteBaseY = 0;
+  private emoteActiveBaseY = 0;
+  private mannaHaloBaseY = 0;
 
   public constructor(scene: Phaser.Scene, view: PlayerView) {
     this.scene = scene;
     this.id = view.id;
     this.bobSeed = (hashString(`${view.id}:bob`) % 1000) / 1000;
-    this.bodyColor = view.color;
     this.targetX = view.x;
     this.targetY = view.y;
 
@@ -270,22 +284,20 @@ class PlayerAvatar {
     }).setOrigin(0.5, 1);
     this.emoteLabel.setAlpha(0);
 
-    this.liveDots = [-7, 0, 7].map((dx) => {
-      const dot = scene.add.circle(dx, -52, 4, 0xff2222, 1);
-      dot.setStrokeStyle(1.5, 0x880000, 0.9);
-      return dot;
-    });
+    this.liveDots = [-7, 0, 7].map((dx) =>
+      scene.add.image(dx, -52, 'life_dot')
+    );
 
-    this.torso   = scene.add.image(0,  -2, 'char_torso').setOrigin(0.5, 0.5 ).setDisplaySize(12, 28);
-    this.head    = scene.add.image(0, -23, 'char_head' ).setOrigin(0.5, 0.5 ).setDisplaySize(20, 22);
-    this.armBack = scene.add.image(-8, -9, 'char_arm'  ).setOrigin(0.5, 0.08).setDisplaySize(8,  20);
-    this.armFront= scene.add.image( 8, -9, 'char_arm'  ).setOrigin(0.5, 0.08).setDisplaySize(8,  20);
+    this.torso   = scene.add.image(0,  -2, 'char_torso').setOrigin(0.5, 0.5 );
+    this.head    = scene.add.image(0, -23, 'char_head' ).setOrigin(0.5, 0.5 );
+    this.armBack = scene.add.image(-8, -9, 'char_arm'  ).setOrigin(0.5, 0.08);
+    this.armFront= scene.add.image( 8, -9, 'char_arm'  ).setOrigin(0.5, 0.08);
 
-    // Gun — wrist pivot at origin row 5 of sprite. Barrel points right (+x). Follows armFront each frame.
-    this.gun = scene.add.image(0, 0, 'char_gun').setOrigin(0, 5 / 14).setDisplaySize(38, 14);
+    // Gun — wrist pivot at origin row 5 of sprite (5/spriteHeight fraction). Barrel points right (+x).
+    this.gun = scene.add.image(0, 0, 'char_gun').setOrigin(0, 5 / 14);
 
-    this.legBack = scene.add.image(-5, 12, 'char_leg').setOrigin(0.5, 0.08).setDisplaySize(8, 22);
-    this.legFront= scene.add.image( 5, 12, 'char_leg').setOrigin(0.5, 0.08).setDisplaySize(8, 22);
+    this.legBack = scene.add.image(-5, 12, 'char_leg').setOrigin(0.5, 0.08);
+    this.legFront= scene.add.image( 5, 12, 'char_leg').setOrigin(0.5, 0.08);
 
     this.figure.add([
       this.legBack,
@@ -297,6 +309,39 @@ class PlayerAvatar {
       this.head,
     ]);
     this.root.add([this.shadow, this.mannaHalo, this.figure, ...this.liveDots, this.nameLabel, this.emoteLabel]);
+
+    // Derive all body-part positions from sprite natural dimensions so any sprite
+    // size produces correct proportions without needing hardcoded pixel values.
+    const torsoH = this.torso.height;
+    const torsoW = this.torso.width;
+    const headH  = this.head.height;
+    const legH   = this.legFront.height;
+    const dotH   = this.liveDots[0].height;
+    const dotW   = this.liveDots[0].width;
+
+    this.torsoBaseY      = -(torsoH * 0.071);
+    const shoulderY      = this.torsoBaseY - torsoH * 0.25;
+    const hipY           = this.torsoBaseY + torsoH * 0.5;
+    this.headBaseY       = this.torsoBaseY - torsoH * 0.5 - headH * 0.318;
+    this.mannaHaloBaseY  = this.torsoBaseY - torsoH * 0.25;
+    this.nameLabelBaseY  = hipY + legH * 1.738;
+    this.emoteBaseY      = this.headBaseY - headH * 1.682;
+    this.emoteActiveBaseY = this.emoteBaseY - headH * 0.18;
+
+    this.torso.y  = this.torsoBaseY;
+    this.head.y   = this.headBaseY;
+    this.armBack.setPosition(-(torsoW * 0.667), shoulderY);
+    this.armFront.setPosition( (torsoW * 0.667), shoulderY);
+    this.legBack.setPosition(-(torsoW * 0.417), hipY);
+    this.legFront.setPosition( (torsoW * 0.417), hipY);
+    this.mannaHalo.y  = this.mannaHaloBaseY;
+    this.nameLabel.y  = this.nameLabelBaseY;
+    this.emoteLabel.y = this.emoteBaseY;
+
+    const dotSpacing = dotW * 0.7;
+    const dotBaseY   = this.headBaseY - headH * 1.318;
+    this.liveDots.forEach((dot, i) => dot.setPosition((i - 1) * dotSpacing, dotBaseY));
+
     this.sync(view);
   }
 
@@ -304,15 +349,13 @@ class PlayerAvatar {
     this.facingDir = view.facingDir;
     this.targetX = view.x;
     this.targetY = view.y;
-    this.bodyColor = view.color;
     this.nameLabel.setText(view.name);
     this.nameLabel.setColor(view.isWinner
       ? "#8b3f04"
-      : (view.isAlive ? (view.hasCollectedMannaThisCycle ? "#9a7200" : "#301d0a") : "#6d5845"));
+      : (view.isAlive ? '#' + view.color.toString(16).padStart(6, '0') : "#6d5845"));
     this.shadow.setAlpha(view.isAlive ? 0.22 : 0.12);
     this.figure.setAlpha(view.isAlive ? 1 : 0.34);
     this.mannaHalo.setAlpha(view.isAlive && view.hasCollectedMannaThisCycle ? 0.38 : 0);
-    this.applyColors();
     this.isAlive = view.isAlive;
     this.isWinner = view.isWinner;
     this.isMoving = view.isMoving;
@@ -321,12 +364,14 @@ class PlayerAvatar {
 
     const lives = view.lives;
     for (let i = 0; i < this.liveDots.length; i++) {
-      this.liveDots[i].setFillStyle(i < lives ? 0xff2222 : 0x444444, i < lives ? 1 : 0.35);
+      this.liveDots[i].setTint(i < lives ? 0xff2222 : 0x444444);
+      this.liveDots[i].setAlpha(i < lives ? 1 : 0.35);
       this.liveDots[i].setVisible(view.isAlive);
     }
   }
 
   public update(deltaMs: number, nowMs: number, wind: { x: number; y: number }): void {
+    const ps = PLAYER_SIZE;
     const lerp = Math.min(1, deltaMs / 100);
     const destinationX = this.victoryMode && this.isWinner ? (WORLD_WIDTH * 0.5) : this.targetX;
     const destinationY = this.victoryMode && this.isWinner ? (WORLD_HEIGHT * 0.54) : this.targetY;
@@ -347,28 +392,28 @@ class PlayerAvatar {
     const bodyLean = moving ? step * 0.08 : 0;
 
     if (this.victoryMode && this.isWinner) {
-      this.root.scaleX = 1.68;
-      this.root.scaleY = 1.68;
+      this.root.scaleX = 1.68 * ps;
+      this.root.scaleY = 1.68 * ps;
       this.figure.scaleX = facing;
       this.figure.scaleY = 1;
       this.figure.x = 0;
       this.figure.y = 0;
       this.figure.rotation = 0;
       this.root.rotation = 0;
-      this.torso.y = -2;
-      this.head.y = -23;
+      this.torso.y = this.torsoBaseY;
+      this.head.y = this.headBaseY;
       this.head.scaleX = 1; // figure.scaleX = facing, so combined = facing
     } else {
-      this.root.scaleX = 1;
-      this.root.scaleY = 1;
+      this.root.scaleX = ps;
+      this.root.scaleY = ps;
       this.figure.scaleX = facing * bodySquish;
       this.figure.scaleY = moving ? 1 + (bob * 0.02) : 1 + (bodyBob * 0.03);
       this.figure.x = (moving ? step * 0.7 : 0) + (wind.x * 0.24);
       this.figure.y = (moving ? -bob * 0.9 : -bodyBob * 0.85) + (wind.y * 0.24);
       this.figure.rotation = bodyLean;
       this.root.rotation = 0;
-      this.torso.y = moving ? -2 + (bob * 0.6) : -2 + (bodyBob * 0.85);
-      this.head.y = moving ? -23 + (bob * 0.15) : -23 + (bodyBob * 0.78);
+      this.torso.y = moving ? this.torsoBaseY + (bob * 0.6) : this.torsoBaseY + (bodyBob * 0.85);
+      this.head.y = moving ? this.headBaseY + (bob * 0.15) : this.headBaseY + (bodyBob * 0.78);
       this.head.scaleX = 1 / bodySquish; // cancel container squish → effective scaleX = facing
     }
 
@@ -397,18 +442,23 @@ class PlayerAvatar {
       this.armFront.rotation -= kick;
     }
 
-    // Track gun to armFront's hand: arm is 20px tall, pivot at 0.08 → 18.4px to bottom
+    // Track gun to armFront's wrist: pivot is at 0.08 from top, wrist is 0.92× arm height away
     const armR = this.armFront.rotation;
-    this.gun.x = 8 - 18.4 * Math.sin(armR);
-    this.gun.y = -9 + 18.4 * Math.cos(armR);
+    const wristDist = this.armFront.height * 0.92;
+    this.gun.x = this.armFront.x - wristDist * Math.sin(armR);
+    this.gun.y = this.armFront.y + wristDist * Math.cos(armR);
     this.gun.rotation = armR;
     this.gun.setVisible(this.isAlive && !this.victoryMode);
 
-    const heightAboveGround = Math.max(0, GROUND_Y - this.root.y);
-    const shadowGroundOffset = heightAboveGround + 27;
+    // Project shadow onto the fixed ground surface (Y=707) regardless of player size.
+    // Feet are at root.y + 27*ps in world space; shadow local Y must compensate for root scale.
+    const groundSurfaceY = GROUND_Y + 27; // 707 — fixed pixel row where feet touch ground
+    const feetWorldY = this.root.y + 27 * ps;
+    const heightAboveGround = Math.max(0, groundSurfaceY - feetWorldY);
+    const shadowLocalY = 27 + heightAboveGround / ps;
     const shadowScale = Math.max(0.35, 1 - heightAboveGround / 350);
     this.shadow.x = wind.x * 0.3;
-    this.shadow.y = shadowGroundOffset + (wind.y * 0.36);
+    this.shadow.y = shadowLocalY + (wind.y * 0.36);
     this.shadow.scaleX = this.isAlive ? (moving ? shadowScale * (1 + bob * 0.08) : shadowScale * 0.92) : shadowScale * 0.84;
     this.shadow.scaleY = this.isAlive ? (moving ? shadowScale * (1 + bob * 0.03) : shadowScale * 0.86) : shadowScale * 0.84;
 
@@ -418,22 +468,22 @@ class PlayerAvatar {
       this.figure.setAlpha(1);
     }
 
-    this.mannaHalo.y = -9 + (this.hasCollectedMannaThisCycle ? Math.sin(nowMs / 120) * 0.5 : 0);
+    this.mannaHalo.y = this.mannaHaloBaseY + (this.hasCollectedMannaThisCycle ? Math.sin(nowMs / 120) * 0.5 : 0);
     this.mannaHalo.scaleX = this.hasCollectedMannaThisCycle ? 1 + (Math.sin(nowMs / 180) * 0.03) : 1;
     this.mannaHalo.scaleY = this.hasCollectedMannaThisCycle ? 1 + (Math.cos(nowMs / 180) * 0.03) : 1;
-    this.nameLabel.y = 50 + (moving ? bob * 0.7 : 0);
+    this.nameLabel.y = this.nameLabelBaseY + (moving ? bob * 0.7 : 0);
     const emoteVisible = this.emoteText.length > 0 && nowMs < this.emoteExpiresAtMs;
     if (emoteVisible) {
       const emotePhase = nowMs - (this.emoteExpiresAtMs - 5000);
       this.emoteLabel.setAlpha(1);
       this.emoteLabel.setText(this.emoteText);
       this.emoteLabel.setScale(1 + (Math.sin(emotePhase / 180) * 0.04));
-      this.emoteLabel.y = -64 + (Math.sin(emotePhase / 220) * 2.4);
+      this.emoteLabel.y = this.emoteActiveBaseY + (Math.sin(emotePhase / 220) * 2.4);
     } else {
       this.emoteLabel.setAlpha(0);
       this.emoteLabel.setText("");
       this.emoteLabel.setScale(1);
-      this.emoteLabel.y = -60;
+      this.emoteLabel.y = this.emoteBaseY;
       this.emoteText = "";
     }
   }
@@ -564,13 +614,6 @@ class PlayerAvatar {
     this.root.destroy(true);
   }
 
-  private applyColors(): void {
-    this.torso.setTint(this.bodyColor);
-    this.armBack.setTint(this.bodyColor);
-    this.armFront.setTint(this.bodyColor);
-    this.legBack.setTint(this.bodyColor);
-    this.legFront.setTint(this.bodyColor);
-  }
 }
 
 class CloudDarknessOverlay {
@@ -971,6 +1014,22 @@ class DesertScene extends Phaser.Scene {
   private currentView: RoundView | null = null;
   private readonly fireballs = new Map<string, FireballVisual>();
   private fireballGfx!: Phaser.GameObjects.Graphics;
+  private platformImages: Phaser.GameObjects.Image[] = [];
+  private editorGfx: Phaser.GameObjects.Graphics | null = null;
+  private editorInteraction: 'add' | 'move' | null = null;
+  private editorPlatformsRef: PlatformDto[] | null = null;
+  private editorOnChange: ((platforms: PlatformDto[]) => void) | null = null;
+  private editorOnApply: (() => void) | null = null;
+  private selectedIndex: number | null = null;
+  private dragState: {
+    type: 'move' | 'resize-left' | 'resize-right';
+    index: number;
+    startX: number;
+    startY: number;
+    origCx: number;
+    origSy: number;
+    origWidth: number;
+  } | null = null;
 
   public constructor(hooks: SceneHooks, initialWave: WaveSnapshot, initialCloud: CloudSnapshot) {
     super("desert");
@@ -1000,12 +1059,15 @@ class DesertScene extends Phaser.Scene {
     this.load.image('char_arm',   'sprites/arm.png');
     this.load.image('char_leg',   'sprites/leg.png');
     this.load.image('char_gun',   'sprites/gun.png');
+    this.load.image('fireball',   'sprites/fireball.png');
+    this.load.image('life_dot',   'sprites/life_dot.png');
+    this.load.image('platform',   'sprites/platform.png');
   }
 
   public create(): void {
     this.add.image(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, "desert-bg");
     this.addGround();
-    this.addPlatforms();
+    this.syncPlatforms(DEFAULT_PLATFORMS);
     this.addDunes();
     this.victoryBackdrop = this.add.rectangle(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, WORLD_WIDTH, WORLD_HEIGHT, 0x000000, 0).setDepth(930);
     this.victoryBackdrop.setVisible(false);
@@ -1080,8 +1142,11 @@ class DesertScene extends Phaser.Scene {
   public syncFireballs(serverFireballs: FireballSnapshot[]): void {
     // remove fireballs no longer on server
     const serverIds = new Set(serverFireballs.map((fb) => fb.id));
-    for (const id of this.fireballs.keys()) {
-      if (!serverIds.has(id)) this.fireballs.delete(id);
+    for (const [id, fb] of this.fireballs.entries()) {
+      if (!serverIds.has(id)) {
+        fb.sprite.destroy();
+        this.fireballs.delete(id);
+      }
     }
     // add or update from server
     for (const fb of serverFireballs) {
@@ -1090,7 +1155,8 @@ class DesertScene extends Phaser.Scene {
         existing.x = fb.x;
         existing.y = fb.y;
       } else {
-        this.fireballs.set(fb.id, { x: fb.x, y: fb.y, dirX: fb.dirX, trail: [], trailTimer: 0 });
+        const sprite = this.add.image(fb.x, fb.y, 'fireball').setDisplaySize(36, 36).setDepth(701).setFlipX(fb.dirX < 0);
+        this.fireballs.set(fb.id, { x: fb.x, y: fb.y, dirX: fb.dirX, trail: [], trailTimer: 0, sprite });
         this.avatars.get(fb.ownerId)?.triggerRecoil();
       }
     }
@@ -1110,18 +1176,14 @@ class DesertScene extends Phaser.Scene {
         if (fb.trail.length > FIREBALL_TRAIL_MAX) fb.trail.pop();
       }
 
+      fb.sprite.x = fb.x;
+      fb.sprite.y = fb.y;
+
       for (let t = 0; t < fb.trail.length; t++) {
         const frac = 1 - t / fb.trail.length;
         this.fireballGfx.fillStyle(0xff6600, frac * 0.42);
         this.fireballGfx.fillCircle(fb.trail[t].x, fb.trail[t].y, 8 * frac);
       }
-
-      this.fireballGfx.fillStyle(0xff4400, 0.22);
-      this.fireballGfx.fillCircle(fb.x, fb.y, 18);
-      this.fireballGfx.fillStyle(0xff6600, 0.78);
-      this.fireballGfx.fillCircle(fb.x, fb.y, 10);
-      this.fireballGfx.fillStyle(0xffee88, 1);
-      this.fireballGfx.fillCircle(fb.x, fb.y, 5);
     }
   }
 
@@ -1325,20 +1387,161 @@ class DesertScene extends Phaser.Scene {
     surface.setDepth(3);
   }
 
-  private addPlatforms(): void {
-    for (const p of PLATFORMS) {
-      const h = 20;
-      const body = this.add.rectangle(p.cx, p.sy + h / 2, p.w, h, 0xc8864e, 1);
-      body.setDepth(5);
-      const under = this.add.rectangle(p.cx, p.sy + h + 3, p.w, 6, 0x7a4820, 0.45);
-      under.setDepth(5);
-      const g = this.add.graphics();
-      g.fillStyle(0x9a5f2e, 1);
-      g.fillRect(p.cx - p.w / 2, p.sy, p.w, 6);
-      g.fillStyle(0xd4a462, 0.55);
-      g.fillRect(p.cx - p.w / 2, p.sy + 6, p.w, 4);
-      g.setDepth(6);
+  public syncPlatforms(platforms: PlatformDto[]): void {
+    if (this.platformImages.length !== platforms.length) {
+      for (const img of this.platformImages) img.destroy();
+      this.platformImages = platforms.map(p =>
+        this.add.image(p.cx, p.surfaceY, 'platform').setOrigin(0.5, 0).setDisplaySize(p.width, 26).setDepth(5)
+      );
+    } else {
+      for (let i = 0; i < platforms.length; i++) {
+        const p = platforms[i];
+        this.platformImages[i].setPosition(p.cx, p.surfaceY).setDisplaySize(p.width, 26);
+      }
     }
+    this.updateEditorOverlay(platforms);
+  }
+
+  public setEditorInteraction(
+    mode: 'add' | 'move' | null,
+    platforms: PlatformDto[] | null,
+    onChange: ((platforms: PlatformDto[]) => void) | null,
+    onApply?: (() => void) | null
+  ): void {
+    this.editorInteraction = mode;
+    this.editorPlatformsRef = platforms;
+    this.editorOnChange = onChange;
+    this.editorOnApply = onApply ?? null;
+    this.dragState = null;
+    this.selectedIndex = null;
+    this.input.off('pointerdown');
+    this.input.off('pointermove');
+    this.input.off('pointerup');
+    if (this.game?.canvas) this.game.canvas.style.cursor = '';
+
+    if (mode === 'add') {
+      this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        if (this.editorPlatformsRef && this.editorOnChange) {
+          this.editorPlatformsRef.push({ cx: Math.round(pointer.x), surfaceY: Math.round(pointer.y), width: 160 });
+          this.syncPlatforms(this.editorPlatformsRef);
+          this.editorOnChange(this.editorPlatformsRef);
+          this.editorOnApply?.();
+        }
+      });
+      if (this.game?.canvas) this.game.canvas.style.cursor = 'crosshair';
+    } else if (mode === 'move') {
+      this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        if (!this.editorPlatformsRef) return;
+        const hit = this.hitTestPlatform(pointer.x, pointer.y);
+        this.selectedIndex = hit?.index ?? null;
+        this.updateEditorOverlay(this.editorPlatformsRef);
+        if (!hit) return;
+        const p = this.editorPlatformsRef[hit.index];
+        this.dragState = {
+          type: hit.type, index: hit.index,
+          startX: pointer.x, startY: pointer.y,
+          origCx: p.cx, origSy: p.surfaceY, origWidth: p.width
+        };
+        if (this.game?.canvas) this.game.canvas.style.cursor = hit.type === 'move' ? 'grabbing' : 'ew-resize';
+      });
+      this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+        this.handleMovePointerMove(pointer);
+      });
+      this.input.on('pointerup', () => {
+        const wasDragging = this.dragState !== null;
+        this.dragState = null;
+        if (this.game?.canvas) this.game.canvas.style.cursor = 'default';
+        if (wasDragging) this.editorOnApply?.();
+      });
+    } else {
+      this.editorGfx?.clear();
+    }
+
+    if (platforms) this.updateEditorOverlay(platforms);
+    else this.editorGfx?.clear();
+  }
+
+  private hitTestPlatform(px: number, py: number): { index: number; type: 'move' | 'resize-left' | 'resize-right' } | null {
+    const platforms = this.editorPlatformsRef;
+    if (!platforms) return null;
+    const H = 12;
+    for (let i = platforms.length - 1; i >= 0; i--) {
+      const p = platforms[i];
+      const left = p.cx - p.width / 2;
+      const right = p.cx + p.width / 2;
+      if (py < p.surfaceY || py > p.surfaceY + 26) continue;
+      if (px >= left && px <= left + H) return { index: i, type: 'resize-left' };
+      if (px >= right - H && px <= right) return { index: i, type: 'resize-right' };
+      if (px >= left && px <= right) return { index: i, type: 'move' };
+    }
+    return null;
+  }
+
+  private handleMovePointerMove(pointer: Phaser.Input.Pointer): void {
+    const platforms = this.editorPlatformsRef;
+    if (!platforms) return;
+    if (this.dragState) {
+      const dx = pointer.x - this.dragState.startX;
+      const dy = pointer.y - this.dragState.startY;
+      const p = platforms[this.dragState.index];
+      if (this.dragState.type === 'move') {
+        p.cx = Math.round(this.dragState.origCx + dx);
+        p.surfaceY = Math.round(this.dragState.origSy + dy);
+      } else if (this.dragState.type === 'resize-right') {
+        const origLeft = this.dragState.origCx - this.dragState.origWidth / 2;
+        const newWidth = Math.max(40, this.dragState.origWidth + dx);
+        p.width = Math.round(newWidth);
+        p.cx = Math.round(origLeft + newWidth / 2);
+      } else {
+        const origRight = this.dragState.origCx + this.dragState.origWidth / 2;
+        const newWidth = Math.max(40, this.dragState.origWidth - dx);
+        p.width = Math.round(newWidth);
+        p.cx = Math.round(origRight - newWidth / 2);
+      }
+      this.syncPlatforms(platforms);
+      this.editorOnChange?.(platforms);
+    } else if (this.game?.canvas) {
+      const hit = this.hitTestPlatform(pointer.x, pointer.y);
+      this.game.canvas.style.cursor = hit
+        ? (hit.type === 'move' ? 'grab' : 'ew-resize')
+        : 'default';
+    }
+  }
+
+  public updateEditorOverlay(platforms: PlatformDto[]): void {
+    if (!this.editorGfx) {
+      this.editorGfx = this.add.graphics().setDepth(10);
+    }
+    this.editorGfx.clear();
+    if (!this.editorInteraction) return;
+    for (let i = 0; i < platforms.length; i++) {
+      const p = platforms[i];
+      const left = p.cx - p.width / 2;
+      const isSelected = this.editorInteraction === 'move' && this.selectedIndex === i;
+      if (isSelected) {
+        this.editorGfx.lineStyle(3, 0xffdd00, 1.0);
+        this.editorGfx.strokeRect(left - 2, p.surfaceY - 2, p.width + 4, 30);
+      }
+      this.editorGfx.lineStyle(2, 0x00ff88, 0.85);
+      this.editorGfx.strokeRect(left, p.surfaceY, p.width, 26);
+      if (this.editorInteraction === 'move') {
+        this.editorGfx.fillStyle(0x00ff88, 0.4);
+        this.editorGfx.fillRect(left, p.surfaceY, 10, 26);
+        this.editorGfx.fillRect(left + p.width - 10, p.surfaceY, 10, 26);
+      }
+    }
+  }
+
+  public getSelectedIndex(): number | null { return this.selectedIndex; }
+
+  public clearSelection(): void {
+    this.selectedIndex = null;
+    if (this.editorPlatformsRef) this.updateEditorOverlay(this.editorPlatformsRef);
+  }
+
+  public updateEditorPlatformsRef(platforms: PlatformDto[]): void {
+    this.editorPlatformsRef = platforms;
+    this.selectedIndex = null;
   }
 
   private addDunes(): void {
@@ -1374,6 +1577,9 @@ class GameClient {
   private keysRight = false;
   private rulesSchema: TunableField[] = [];
   private pendingRulesUpdate = false;
+  private editorPlatforms: PlatformDto[] = [...DEFAULT_PLATFORMS];
+  private editorOpen = false;
+  private editorAddMode = false;
 
   private isHost(view: RoundView | null): boolean {
     if (!view || !this.selfId) {
@@ -1463,6 +1669,22 @@ class GameClient {
       void this.applyRules();
     });
 
+    this.ui.editorSaveBtn.addEventListener("click", () => { void this.saveMap(); });
+    this.ui.editorLoadBtn.addEventListener("click", () => { void this.loadMap(); });
+    document.getElementById("editor-open-btn")!.addEventListener("click", () => {
+      this.editorOpen = true;
+      this.refreshEditorState();
+    });
+    document.getElementById("editor-close-btn")!.addEventListener("click", () => {
+      this.editorOpen = false;
+      this.refreshEditorState();
+    });
+    this.ui.editorAddToggle.addEventListener("click", () => {
+      this.editorAddMode = !this.editorAddMode;
+      this.ui.editorAddToggle.classList.toggle("active", this.editorAddMode);
+      this.refreshEditorState();
+    });
+
     window.addEventListener("keydown", (event) => {
       if (!this.selfId) {
         return;
@@ -1521,6 +1743,18 @@ class GameClient {
         case "Q":
           this.sendFireball();
           break;
+        case "Delete":
+          if (this.editorOpen && !this.editorAddMode && !(document.activeElement instanceof HTMLInputElement)) {
+            const idx = this.scene.getSelectedIndex();
+            if (idx !== null) {
+              this.editorPlatforms.splice(idx, 1);
+              this.scene.syncPlatforms(this.editorPlatforms);
+              this.scene.clearSelection();
+              void this.applyPlatforms();
+            }
+            event.preventDefault();
+          }
+          break;
         default:
           break;
       }
@@ -1573,12 +1807,15 @@ class GameClient {
       this.updateMenuVisibility(this.lastView);
       this.updateTuningPanelVisibility(this.lastView);
       void this.connection.send("GetRules");
+      void this.connection.send("GetPlatforms");
     });
 
     this.connection.on("RulesSchema", (payload: { fields: TunableField[] }) => {
       this.rulesSchema = payload.fields;
       const fbSpeed = payload.fields.find(f => f.key === "FireballSpeed");
       if (fbSpeed != null) FIREBALL_SPEED = fbSpeed.value;
+      const playerSize = payload.fields.find(f => f.key === "PlayerSize");
+      if (playerSize != null) PLAYER_SIZE = playerSize.value;
       this.buildTuningPanel();
       if (this.pendingRulesUpdate) {
         this.pendingRulesUpdate = false;
@@ -1591,6 +1828,30 @@ class GameClient {
         ? "Cannot change settings during an active round."
         : "Changes rejected — only the host can edit settings.";
       this.showTuningNotice(msg, "danger");
+    });
+
+    this.connection.on("PlatformsUpdated", (payload: { platforms: PlatformDto[] }) => {
+      this.editorPlatforms = payload.platforms;
+      this.scene.syncPlatforms(payload.platforms);
+      if (this.editorOpen) this.scene.updateEditorPlatformsRef(payload.platforms);
+    });
+
+    this.connection.on("MapList", (payload: { names: string[] }) => {
+      this.ui.editorLoadSelect.replaceChildren();
+      const def = document.createElement("option");
+      def.value = "";
+      def.textContent = "Load map…";
+      this.ui.editorLoadSelect.append(def);
+      for (const name of payload.names) {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        this.ui.editorLoadSelect.append(opt);
+      }
+    });
+
+    this.connection.on("MapActionRejected", (payload: { action: string; reason: string }) => {
+      this.showEditorNotice(`${payload.action} failed: ${payload.reason}`, "danger");
     });
 
     this.connection.on("JoinRejected", (payload: { reason: string; game_over?: boolean; gameOver?: boolean }) => {
@@ -1776,6 +2037,7 @@ class GameClient {
     this.renderSidebar(view);
     this.updateMenuVisibility(view);
     this.updateTuningPanelVisibility(view);
+    this.updateEditorPanelVisibility(view);
     this.renderBanner(view);
     this.updateConnectionSummary(view);
     this.updateRoomBadge();
@@ -2190,6 +2452,67 @@ class GameClient {
       this.ui.tuningNotice.classList.add("hidden");
     }, 3000);
   }
+
+  private updateEditorPanelVisibility(view: RoundView | null): void {
+    const canEdit = !!this.selfId && this.isHost(view) && view?.status !== "active";
+    if (!canEdit && this.editorOpen) {
+      this.editorOpen = false;
+      this.editorAddMode = false;
+      this.refreshEditorState();
+    }
+  }
+
+  private refreshEditorState(): void {
+    this.ui.editorOverlay.classList.toggle("hidden", !this.editorOpen);
+    this.ui.editorAddToggle.classList.toggle("active", this.editorAddMode);
+    if (this.editorOpen) {
+      this.scene.setEditorInteraction(
+        this.editorAddMode ? 'add' : 'move',
+        this.editorPlatforms,
+        (platforms) => { this.editorPlatforms = platforms; },
+        () => { void this.applyPlatforms(); }
+      );
+    } else {
+      this.scene.setEditorInteraction(null, null, null);
+    }
+  }
+
+  private async applyPlatforms(): Promise<void> {
+    if (!this.connection || this.connection.state !== HubConnectionState.Connected) return;
+    try {
+      await this.connection.send("ApplyPlatforms", { platforms: this.editorPlatforms });
+    } catch { /* silent — live apply is best-effort */ }
+  }
+
+  private async saveMap(): Promise<void> {
+    if (!this.connection || this.connection.state !== HubConnectionState.Connected) return;
+    const name = this.ui.editorMapName.value.trim();
+    if (!name) { this.showEditorNotice("Enter a map name.", "danger"); return; }
+    try {
+      await this.connection.send("SaveMap", { name, platforms: this.editorPlatforms });
+      this.showEditorNotice("Map saved.", "success");
+    } catch {
+      this.showEditorNotice("Save failed.", "danger");
+    }
+  }
+
+  private async loadMap(): Promise<void> {
+    if (!this.connection || this.connection.state !== HubConnectionState.Connected) return;
+    const name = this.ui.editorLoadSelect.value;
+    if (!name) return;
+    try {
+      await this.connection.send("LoadMap", { name });
+    } catch {
+      this.showEditorNotice("Load failed.", "danger");
+    }
+  }
+
+  private showEditorNotice(message: string, tone: "success" | "danger"): void {
+    this.ui.editorNotice.textContent = message;
+    this.ui.editorNotice.dataset.tone = tone;
+    this.ui.editorNotice.classList.remove("hidden");
+    window.setTimeout(() => { this.ui.editorNotice.classList.add("hidden"); }, 3000);
+  }
 }
 
 function renderShell(): UiRefs {
@@ -2240,9 +2563,26 @@ function renderShell(): UiRefs {
           <div class="tuning-footer">
             <div class="tuning-notice hidden" id="tuning-notice"></div>
             <button class="tuning-apply" id="tuning-apply" type="button">Apply</button>
+            <button class="tuning-apply editor-open-btn" id="editor-open-btn" type="button">Level Editor</button>
           </div>
         </section>
       </aside>
+      <div class="editor-overlay hidden" id="editor-overlay">
+        <div class="editor-overlay-head">
+          <span class="section-title">Level Editor</span>
+          <button class="editor-close-btn" id="editor-close-btn" type="button">✕</button>
+        </div>
+        <button class="editor-toggle-btn" id="editor-add-toggle" type="button">＋ Add Platform</button>
+        <div class="editor-map-bar">
+          <input id="editor-map-name" placeholder="Map name" maxlength="40" />
+          <button id="editor-save-btn" type="button">Save</button>
+        </div>
+        <div class="editor-map-bar">
+          <select id="editor-load-select"><option value="">Load map…</option></select>
+          <button id="editor-load-btn" type="button">Load</button>
+        </div>
+        <div id="editor-notice" class="editor-notice hidden"></div>
+      </div>
       <main class="stage card">
         <div class="banner hidden" id="banner"></div>
         <div class="special-notices">
@@ -2281,10 +2621,17 @@ function renderShell(): UiRefs {
     tuningPanel: document.querySelector<HTMLElement>("#tuning-panel")!,
     tuningFields: document.querySelector<HTMLDivElement>("#tuning-fields")!,
     tuningApply: document.querySelector<HTMLButtonElement>("#tuning-apply")!,
-    tuningNotice: document.querySelector<HTMLDivElement>("#tuning-notice")!
+    tuningNotice: document.querySelector<HTMLDivElement>("#tuning-notice")!,
+    editorOverlay: document.querySelector<HTMLElement>("#editor-overlay")!,
+    editorAddToggle: document.querySelector<HTMLButtonElement>("#editor-add-toggle")!,
+    editorMapName: document.querySelector<HTMLInputElement>("#editor-map-name")!,
+    editorSaveBtn: document.querySelector<HTMLButtonElement>("#editor-save-btn")!,
+    editorLoadSelect: document.querySelector<HTMLSelectElement>("#editor-load-select")!,
+    editorLoadBtn: document.querySelector<HTMLButtonElement>("#editor-load-btn")!,
+    editorNotice: document.querySelector<HTMLDivElement>("#editor-notice")!
   };
 
-  if (!ui.layout || !ui.sidebar || !ui.stage || !ui.gameRoot || !ui.banner || !ui.waveWarning || !ui.waveNotice || !ui.cloudNotice || !ui.mannaNotice || !ui.roundState || !ui.roundDetail || !ui.roundAction || !ui.joinPanel || !ui.joinButton || !ui.nameInput || !ui.playerList || !ui.playerCount || !ui.statusText || !ui.roomBadge || !ui.connectionBadge || !ui.tuningPanel || !ui.tuningFields || !ui.tuningApply || !ui.tuningNotice) {
+  if (!ui.layout || !ui.sidebar || !ui.stage || !ui.gameRoot || !ui.banner || !ui.waveWarning || !ui.waveNotice || !ui.cloudNotice || !ui.mannaNotice || !ui.roundState || !ui.roundDetail || !ui.roundAction || !ui.joinPanel || !ui.joinButton || !ui.nameInput || !ui.playerList || !ui.playerCount || !ui.statusText || !ui.roomBadge || !ui.connectionBadge || !ui.tuningPanel || !ui.tuningFields || !ui.tuningApply || !ui.tuningNotice || !ui.editorOverlay || !ui.editorAddToggle || !ui.editorMapName || !ui.editorSaveBtn || !ui.editorLoadSelect || !ui.editorLoadBtn || !ui.editorNotice) {
     throw new Error("UI bootstrap failed.");
   }
 
