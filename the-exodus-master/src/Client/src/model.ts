@@ -89,10 +89,13 @@ export type GameEventType =
   | "cloud_resolved"
   | "player_bumped"
   | "player_died"
+  | "player_lost_life"
   | "winner_declared"
   | "manna_cycle_spawned"
   | "manna_collected"
-  | "manna_cycle_resolved";
+  | "manna_cycle_resolved"
+  | "monster_hit"
+  | "monster_died";
 
 export type GameEventSnapshot = {
   type: GameEventType;
@@ -127,6 +130,21 @@ export type FireballSnapshot = {
   dirX: number;
 };
 
+export type MonsterSnapshot = {
+  id: string;
+  x: number;
+  y: number;
+  facingDir: number;
+  hp: number;
+  isPaused: boolean;
+};
+
+export type MonsterSpawnDto = {
+  id: string;
+  x: number;
+  y: number;
+};
+
 export type WorldSnapshot = {
   tick: number;
   serverTimeMs: number;
@@ -138,6 +156,7 @@ export type WorldSnapshot = {
   winnerPlayerId: string | null;
   gameOver: boolean;
   fireballs?: FireballSnapshot[];
+  monsters?: MonsterSnapshot[];
 };
 
 export type JoinRejectedSnapshot = {

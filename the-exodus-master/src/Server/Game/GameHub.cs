@@ -79,6 +79,8 @@ public sealed class GameHub(GameWorld world) : Hub
         await Clients.Caller.SendAsync("PlatformsUpdated", new PlatformsUpdatedPayload(platforms));
         var maps = _world.ListMaps();
         await Clients.Caller.SendAsync("MapList", new MapListPayload(maps));
+        var spawns = _world.GetMonsterSpawns();
+        await Clients.Caller.SendAsync("MonsterSpawnsUpdated", new MonsterSpawnsUpdatedPayload(spawns));
     }
 
     public async Task UpdateRules(UpdateRulesRequest request)
@@ -122,6 +124,14 @@ public sealed class GameHub(GameWorld world) : Hub
         await Clients.All.SendAsync("PlatformsUpdated", new PlatformsUpdatedPayload(platforms));
         var maps = _world.ListMaps();
         await Clients.Caller.SendAsync("MapList", new MapListPayload(maps));
+    }
+
+    public async Task ApplyMonsterSpawns(ApplyMonsterSpawnsRequest request)
+    {
+        var result = _world.TryApplyMonsterSpawns(Context.ConnectionId, request.Spawns);
+        if (!result.Success) return;
+        var spawns = _world.GetMonsterSpawns();
+        await Clients.All.SendAsync("MonsterSpawnsUpdated", new MonsterSpawnsUpdatedPayload(spawns));
     }
 
     public async Task LoadMap(LoadMapRequest request)

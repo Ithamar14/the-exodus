@@ -25,6 +25,8 @@ import {
   type CloudSnapshot,
   type WaveSnapshot,
   type FireballSnapshot,
+  type MonsterSnapshot,
+  type MonsterSpawnDto,
   GROUND_Y,
   WORLD_HEIGHT,
   WORLD_WIDTH
@@ -69,6 +71,7 @@ type UiRefs = {
   tuningNotice: HTMLDivElement;
   editorOverlay: HTMLElement;
   editorAddToggle: HTMLButtonElement;
+  editorMonsterAddToggle: HTMLButtonElement;
   editorMapName: HTMLInputElement;
   editorSaveBtn: HTMLButtonElement;
   editorLoadSelect: HTMLSelectElement;
@@ -616,6 +619,82 @@ class PlayerAvatar {
 
 }
 
+class MonsterAvatar {
+  public readonly id: string;
+  private readonly root: Phaser.GameObjects.Container;
+  private readonly head: Phaser.GameObjects.Image;
+  private readonly legs: Phaser.GameObjects.Image[];
+  private readonly hpDots: Phaser.GameObjects.Image[];
+  private targetX: number;
+  private targetY: number;
+  private isPaused = false;
+  private hp = 2;
+  private walkPhase = 0;
+
+  public constructor(scene: Phaser.Scene, snapshot: MonsterSnapshot) {
+    this.id = snapshot.id;
+    this.targetX = snapshot.x;
+    this.targetY = snapshot.y;
+
+    this.root = scene.add.container(snapshot.x, snapshot.y).setDepth(490);
+
+    // 4 legs at evenly-spaced X positions, hanging below head
+    const legXs = [-22, -7, 7, 22];
+    this.legs = legXs.map(lx =>
+      scene.add.image(lx, 15, 'monster_leg').setOrigin(0.5, 0).setDisplaySize(10, 30)
+    );
+
+    this.head = scene.add.image(0, 0, 'monster_head').setOrigin(0.5, 0.5).setDisplaySize(60, 60);
+
+    // 2 HP dots above head
+    this.hpDots = [-7, 7].map(dx =>
+      scene.add.image(dx, -40, 'life_dot').setDisplaySize(10, 10)
+    );
+
+    this.root.add([...this.legs, this.head, ...this.hpDots]);
+    this.sync(snapshot);
+  }
+
+  public sync(snapshot: MonsterSnapshot): void {
+    this.targetX = snapshot.x;
+    this.targetY = snapshot.y;
+    this.isPaused = snapshot.isPaused;
+    this.hp = snapshot.hp;
+
+    this.head.setFlipX(snapshot.facingDir < 0);
+    for (const leg of this.legs) leg.setFlipX(snapshot.facingDir < 0);
+
+    for (let i = 0; i < this.hpDots.length; i++) {
+      this.hpDots[i].setTint(i < this.hp ? 0xff2222 : 0x444444);
+      this.hpDots[i].setAlpha(i < this.hp ? 1 : 0.35);
+    }
+    this.root.setAlpha(this.hp <= 0 ? 0 : 1);
+  }
+
+  public update(deltaMs: number, _nowMs: number): void {
+    const lerp = Math.min(1, deltaMs / 100);
+    this.root.x = Phaser.Math.Linear(this.root.x, this.targetX, lerp);
+    this.root.y = Phaser.Math.Linear(this.root.y, this.targetY, lerp);
+    this.root.setDepth(490 + this.root.y * 0.001);
+
+    if (!this.isPaused && this.hp > 0) {
+      this.walkPhase += deltaMs * 0.008;
+      const step = Math.sin(this.walkPhase);
+      // Alternate pairs: legs 0,2 in phase; legs 1,3 counter-phase
+      this.legs[0].rotation =  step * 0.55;
+      this.legs[1].rotation = -step * 0.55;
+      this.legs[2].rotation =  step * 0.55;
+      this.legs[3].rotation = -step * 0.55;
+    } else {
+      for (const leg of this.legs) leg.rotation = 0;
+    }
+  }
+
+  public destroy(): void {
+    this.root.destroy(true);
+  }
+}
+
 class CloudDarknessOverlay {
   private readonly darkness: Phaser.GameObjects.Rectangle;
   private readonly maskShape: Phaser.GameObjects.Graphics;
@@ -1015,12 +1094,18 @@ class DesertScene extends Phaser.Scene {
   private readonly fireballs = new Map<string, FireballVisual>();
   private fireballGfx!: Phaser.GameObjects.Graphics;
   private platformImages: Phaser.GameObjects.Image[] = [];
+  private readonly monsterAvatars = new Map<string, MonsterAvatar>();
   private editorGfx: Phaser.GameObjects.Graphics | null = null;
-  private editorInteraction: 'add' | 'move' | null = null;
+  private editorInteraction: 'add' | 'add-monster' | 'move' | null = null;
   private editorPlatformsRef: PlatformDto[] | null = null;
   private editorOnChange: ((platforms: PlatformDto[]) => void) | null = null;
   private editorOnApply: (() => void) | null = null;
   private selectedIndex: number | null = null;
+  private editorMonsterSpawnsRef: MonsterSpawnDto[] | null = null;
+  private editorMonsterOnChange: ((spawns: MonsterSpawnDto[]) => void) | null = null;
+  private editorMonsterOnApply: (() => void) | null = null;
+  private selectedMonsterIndex: number | null = null;
+  private spawnIdCounter = 0;
   private dragState: {
     type: 'move' | 'resize-left' | 'resize-right';
     index: number;
@@ -1059,9 +1144,11 @@ class DesertScene extends Phaser.Scene {
     this.load.image('char_arm',   'sprites/arm.png');
     this.load.image('char_leg',   'sprites/leg.png');
     this.load.image('char_gun',   'sprites/gun.png');
-    this.load.image('fireball',   'sprites/fireball.png');
-    this.load.image('life_dot',   'sprites/life_dot.png');
-    this.load.image('platform',   'sprites/platform.png');
+    this.load.image('fireball',      'sprites/fireball.png');
+    this.load.image('life_dot',      'sprites/life_dot.png');
+    this.load.image('platform',      'sprites/platform.png');
+    this.load.image('monster_head',  'sprites/monster_head.png');
+    this.load.image('monster_leg',   'sprites/monster_leg.png');
   }
 
   public create(): void {
@@ -1124,7 +1211,7 @@ class DesertScene extends Phaser.Scene {
     }
   }
 
-  public syncRound(view: RoundView, selfId: string | null, fireballs: FireballSnapshot[]): void {
+  public syncRound(view: RoundView, selfId: string | null, fireballs: FireballSnapshot[], monsters: MonsterSnapshot[]): void {
     this.currentView = view;
     if (!this.cloudOverlay || !this.waveOverlay || !this.decorations) {
       return;
@@ -1133,10 +1220,30 @@ class DesertScene extends Phaser.Scene {
     this.cloudOverlay.sync(view.cloud);
     this.waveOverlay.sync(view.wave, view.wave.isActive);
     this.syncPlayers(view.players, selfId);
+    this.syncMonsters(monsters);
     this.syncVictory(view);
     this.mannaDirector?.sync(view);
     this.playEvents(view.events, view);
     this.syncFireballs(fireballs);
+  }
+
+  public syncMonsters(monsters: MonsterSnapshot[]): void {
+    const seen = new Set<string>();
+    for (const m of monsters) {
+      seen.add(m.id);
+      const existing = this.monsterAvatars.get(m.id);
+      if (existing) {
+        existing.sync(m);
+      } else {
+        this.monsterAvatars.set(m.id, new MonsterAvatar(this, m));
+      }
+    }
+    for (const [id, avatar] of this.monsterAvatars.entries()) {
+      if (!seen.has(id)) {
+        avatar.destroy();
+        this.monsterAvatars.delete(id);
+      }
+    }
   }
 
   public syncFireballs(serverFireballs: FireballSnapshot[]): void {
@@ -1197,6 +1304,10 @@ class DesertScene extends Phaser.Scene {
 
     for (const avatar of this.avatars.values()) {
       avatar.update(delta, now, wind);
+    }
+
+    for (const monster of this.monsterAvatars.values()) {
+      monster.update(delta, now);
     }
 
     this.cloudOverlay?.draw(now);
@@ -1403,17 +1514,23 @@ class DesertScene extends Phaser.Scene {
   }
 
   public setEditorInteraction(
-    mode: 'add' | 'move' | null,
+    mode: 'add' | 'add-monster' | 'move' | null,
     platforms: PlatformDto[] | null,
+    monsterSpawns: MonsterSpawnDto[] | null,
     onChange: ((platforms: PlatformDto[]) => void) | null,
+    onMonsterChange: ((spawns: MonsterSpawnDto[]) => void) | null,
     onApply?: (() => void) | null
   ): void {
     this.editorInteraction = mode;
     this.editorPlatformsRef = platforms;
+    this.editorMonsterSpawnsRef = monsterSpawns;
     this.editorOnChange = onChange;
+    this.editorMonsterOnChange = onMonsterChange;
     this.editorOnApply = onApply ?? null;
+    this.editorMonsterOnApply = onApply ?? null;
     this.dragState = null;
     this.selectedIndex = null;
+    this.selectedMonsterIndex = null;
     this.input.off('pointerdown');
     this.input.off('pointermove');
     this.input.off('pointerup');
@@ -1429,11 +1546,32 @@ class DesertScene extends Phaser.Scene {
         }
       });
       if (this.game?.canvas) this.game.canvas.style.cursor = 'crosshair';
+    } else if (mode === 'add-monster') {
+      this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        if (this.editorMonsterSpawnsRef && this.editorMonsterOnChange) {
+          const id = `spawn-${Date.now()}-${this.spawnIdCounter++}`;
+          this.editorMonsterSpawnsRef.push({ id, x: Math.round(pointer.x), y: Math.round(pointer.y) });
+          this.editorMonsterOnChange(this.editorMonsterSpawnsRef);
+          this.editorMonsterOnApply?.();
+          this.updateEditorOverlay(this.editorPlatformsRef ?? []);
+        }
+      });
+      if (this.game?.canvas) this.game.canvas.style.cursor = 'crosshair';
     } else if (mode === 'move') {
       this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        // Check monster spawns first (smaller hit targets)
+        const monsterHit = this.hitTestMonsterSpawn(pointer.x, pointer.y);
+        if (monsterHit !== null) {
+          this.selectedMonsterIndex = monsterHit;
+          this.selectedIndex = null;
+          this.updateEditorOverlay(this.editorPlatformsRef ?? []);
+          return;
+        }
+
         if (!this.editorPlatformsRef) return;
         const hit = this.hitTestPlatform(pointer.x, pointer.y);
         this.selectedIndex = hit?.index ?? null;
+        this.selectedMonsterIndex = null;
         this.updateEditorOverlay(this.editorPlatformsRef);
         if (!hit) return;
         const p = this.editorPlatformsRef[hit.index];
@@ -1457,8 +1595,33 @@ class DesertScene extends Phaser.Scene {
       this.editorGfx?.clear();
     }
 
-    if (platforms) this.updateEditorOverlay(platforms);
+    if (platforms || monsterSpawns) this.updateEditorOverlay(platforms ?? []);
     else this.editorGfx?.clear();
+  }
+
+  private hitTestMonsterSpawn(px: number, py: number): number | null {
+    const spawns = this.editorMonsterSpawnsRef;
+    if (!spawns) return null;
+    for (let i = spawns.length - 1; i >= 0; i--) {
+      const s = spawns[i];
+      const dx = px - s.x;
+      const dy = py - s.y;
+      if (Math.sqrt(dx * dx + dy * dy) <= 28) return i;
+    }
+    return null;
+  }
+
+  public getSelectedMonsterIndex(): number | null { return this.selectedMonsterIndex; }
+
+  public clearMonsterSelection(): void {
+    this.selectedMonsterIndex = null;
+    this.updateEditorOverlay(this.editorPlatformsRef ?? []);
+  }
+
+  public updateEditorMonsterSpawnsRef(spawns: MonsterSpawnDto[]): void {
+    this.editorMonsterSpawnsRef = spawns;
+    this.selectedMonsterIndex = null;
+    this.updateEditorOverlay(this.editorPlatformsRef ?? []);
   }
 
   private hitTestPlatform(px: number, py: number): { index: number; type: 'move' | 'resize-left' | 'resize-right' } | null {
@@ -1514,6 +1677,7 @@ class DesertScene extends Phaser.Scene {
     }
     this.editorGfx.clear();
     if (!this.editorInteraction) return;
+
     for (let i = 0; i < platforms.length; i++) {
       const p = platforms[i];
       const left = p.cx - p.width / 2;
@@ -1530,6 +1694,22 @@ class DesertScene extends Phaser.Scene {
         this.editorGfx.fillRect(left + p.width - 10, p.surfaceY, 10, 26);
       }
     }
+
+    const spawns = this.editorMonsterSpawnsRef;
+    if (spawns) {
+      for (let i = 0; i < spawns.length; i++) {
+        const s = spawns[i];
+        const isSelected = this.selectedMonsterIndex === i;
+        if (isSelected) {
+          this.editorGfx.lineStyle(3, 0xffdd00, 1.0);
+          this.editorGfx.strokeCircle(s.x, s.y, 32);
+        }
+        this.editorGfx.lineStyle(2, 0xff8800, 0.9);
+        this.editorGfx.strokeCircle(s.x, s.y, 26);
+        this.editorGfx.fillStyle(0xff8800, 0.2);
+        this.editorGfx.fillCircle(s.x, s.y, 26);
+      }
+    }
   }
 
   public getSelectedIndex(): number | null { return this.selectedIndex; }
@@ -1542,6 +1722,7 @@ class DesertScene extends Phaser.Scene {
   public updateEditorPlatformsRef(platforms: PlatformDto[]): void {
     this.editorPlatformsRef = platforms;
     this.selectedIndex = null;
+    this.updateEditorOverlay(platforms);
   }
 
   private addDunes(): void {
@@ -1578,8 +1759,10 @@ class GameClient {
   private rulesSchema: TunableField[] = [];
   private pendingRulesUpdate = false;
   private editorPlatforms: PlatformDto[] = [...DEFAULT_PLATFORMS];
+  private editorMonsterSpawns: MonsterSpawnDto[] = [];
   private editorOpen = false;
   private editorAddMode = false;
+  private editorMonsterAddMode = false;
 
   private isHost(view: RoundView | null): boolean {
     if (!view || !this.selfId) {
@@ -1681,7 +1864,17 @@ class GameClient {
     });
     this.ui.editorAddToggle.addEventListener("click", () => {
       this.editorAddMode = !this.editorAddMode;
+      if (this.editorAddMode) this.editorMonsterAddMode = false;
       this.ui.editorAddToggle.classList.toggle("active", this.editorAddMode);
+      this.ui.editorMonsterAddToggle.classList.toggle("active", false);
+      this.refreshEditorState();
+    });
+
+    this.ui.editorMonsterAddToggle.addEventListener("click", () => {
+      this.editorMonsterAddMode = !this.editorMonsterAddMode;
+      if (this.editorMonsterAddMode) this.editorAddMode = false;
+      this.ui.editorMonsterAddToggle.classList.toggle("active", this.editorMonsterAddMode);
+      this.ui.editorAddToggle.classList.toggle("active", false);
       this.refreshEditorState();
     });
 
@@ -1744,7 +1937,15 @@ class GameClient {
           this.sendFireball();
           break;
         case "Delete":
-          if (this.editorOpen && !this.editorAddMode && !(document.activeElement instanceof HTMLInputElement)) {
+          if (this.editorOpen && !this.editorAddMode && !this.editorMonsterAddMode && !(document.activeElement instanceof HTMLInputElement)) {
+            const monsterIdx = this.scene.getSelectedMonsterIndex();
+            if (monsterIdx !== null) {
+              this.editorMonsterSpawns.splice(monsterIdx, 1);
+              this.scene.clearMonsterSelection();
+              void this.applyMonsterSpawns();
+              event.preventDefault();
+              break;
+            }
             const idx = this.scene.getSelectedIndex();
             if (idx !== null) {
               this.editorPlatforms.splice(idx, 1);
@@ -1834,6 +2035,11 @@ class GameClient {
       this.editorPlatforms = payload.platforms;
       this.scene.syncPlatforms(payload.platforms);
       if (this.editorOpen) this.scene.updateEditorPlatformsRef(payload.platforms);
+    });
+
+    this.connection.on("MonsterSpawnsUpdated", (payload: { spawns: MonsterSpawnDto[] }) => {
+      this.editorMonsterSpawns = payload.spawns;
+      if (this.editorOpen) this.scene.updateEditorMonsterSpawnsRef(payload.spawns);
     });
 
     this.connection.on("MapList", (payload: { names: string[] }) => {
@@ -2030,7 +2236,7 @@ class GameClient {
   private handleSnapshot(snapshot: WorldSnapshot): void {
     const previous = this.lastSnapshot;
     const view = deriveRoundView(snapshot, previous ?? undefined);
-    this.scene.syncRound(view, this.selfId, snapshot.fireballs ?? []);
+    this.scene.syncRound(view, this.selfId, snapshot.fireballs ?? [], snapshot.monsters ?? []);
     this.updateRoundPanel(view);
     this.updateSpecialNotices(view);
     this.updateDebugState(view);
@@ -2458,6 +2664,7 @@ class GameClient {
     if (!canEdit && this.editorOpen) {
       this.editorOpen = false;
       this.editorAddMode = false;
+      this.editorMonsterAddMode = false;
       this.refreshEditorState();
     }
   }
@@ -2465,15 +2672,19 @@ class GameClient {
   private refreshEditorState(): void {
     this.ui.editorOverlay.classList.toggle("hidden", !this.editorOpen);
     this.ui.editorAddToggle.classList.toggle("active", this.editorAddMode);
+    this.ui.editorMonsterAddToggle.classList.toggle("active", this.editorMonsterAddMode);
     if (this.editorOpen) {
+      const mode = this.editorAddMode ? 'add' : this.editorMonsterAddMode ? 'add-monster' : 'move';
       this.scene.setEditorInteraction(
-        this.editorAddMode ? 'add' : 'move',
+        mode,
         this.editorPlatforms,
+        this.editorMonsterSpawns,
         (platforms) => { this.editorPlatforms = platforms; },
-        () => { void this.applyPlatforms(); }
+        (spawns) => { this.editorMonsterSpawns = spawns; },
+        () => { void this.applyPlatforms(); void this.applyMonsterSpawns(); }
       );
     } else {
-      this.scene.setEditorInteraction(null, null, null);
+      this.scene.setEditorInteraction(null, null, null, null, null);
     }
   }
 
@@ -2481,6 +2692,13 @@ class GameClient {
     if (!this.connection || this.connection.state !== HubConnectionState.Connected) return;
     try {
       await this.connection.send("ApplyPlatforms", { platforms: this.editorPlatforms });
+    } catch { /* silent — live apply is best-effort */ }
+  }
+
+  private async applyMonsterSpawns(): Promise<void> {
+    if (!this.connection || this.connection.state !== HubConnectionState.Connected) return;
+    try {
+      await this.connection.send("ApplyMonsterSpawns", { spawns: this.editorMonsterSpawns });
     } catch { /* silent — live apply is best-effort */ }
   }
 
@@ -2573,6 +2791,7 @@ function renderShell(): UiRefs {
           <button class="editor-close-btn" id="editor-close-btn" type="button">✕</button>
         </div>
         <button class="editor-toggle-btn" id="editor-add-toggle" type="button">＋ Add Platform</button>
+        <button class="editor-toggle-btn" id="editor-monster-add-toggle" type="button">＋ Add Monster</button>
         <div class="editor-map-bar">
           <input id="editor-map-name" placeholder="Map name" maxlength="40" />
           <button id="editor-save-btn" type="button">Save</button>
@@ -2624,6 +2843,7 @@ function renderShell(): UiRefs {
     tuningNotice: document.querySelector<HTMLDivElement>("#tuning-notice")!,
     editorOverlay: document.querySelector<HTMLElement>("#editor-overlay")!,
     editorAddToggle: document.querySelector<HTMLButtonElement>("#editor-add-toggle")!,
+    editorMonsterAddToggle: document.querySelector<HTMLButtonElement>("#editor-monster-add-toggle")!,
     editorMapName: document.querySelector<HTMLInputElement>("#editor-map-name")!,
     editorSaveBtn: document.querySelector<HTMLButtonElement>("#editor-save-btn")!,
     editorLoadSelect: document.querySelector<HTMLSelectElement>("#editor-load-select")!,
@@ -2631,7 +2851,7 @@ function renderShell(): UiRefs {
     editorNotice: document.querySelector<HTMLDivElement>("#editor-notice")!
   };
 
-  if (!ui.layout || !ui.sidebar || !ui.stage || !ui.gameRoot || !ui.banner || !ui.waveWarning || !ui.waveNotice || !ui.cloudNotice || !ui.mannaNotice || !ui.roundState || !ui.roundDetail || !ui.roundAction || !ui.joinPanel || !ui.joinButton || !ui.nameInput || !ui.playerList || !ui.playerCount || !ui.statusText || !ui.roomBadge || !ui.connectionBadge || !ui.tuningPanel || !ui.tuningFields || !ui.tuningApply || !ui.tuningNotice || !ui.editorOverlay || !ui.editorAddToggle || !ui.editorMapName || !ui.editorSaveBtn || !ui.editorLoadSelect || !ui.editorLoadBtn || !ui.editorNotice) {
+  if (!ui.layout || !ui.sidebar || !ui.stage || !ui.gameRoot || !ui.banner || !ui.waveWarning || !ui.waveNotice || !ui.cloudNotice || !ui.mannaNotice || !ui.roundState || !ui.roundDetail || !ui.roundAction || !ui.joinPanel || !ui.joinButton || !ui.nameInput || !ui.playerList || !ui.playerCount || !ui.statusText || !ui.roomBadge || !ui.connectionBadge || !ui.tuningPanel || !ui.tuningFields || !ui.tuningApply || !ui.tuningNotice || !ui.editorOverlay || !ui.editorAddToggle || !ui.editorMonsterAddToggle || !ui.editorMapName || !ui.editorSaveBtn || !ui.editorLoadSelect || !ui.editorLoadBtn || !ui.editorNotice) {
     throw new Error("UI bootstrap failed.");
   }
 

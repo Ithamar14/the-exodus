@@ -6,8 +6,19 @@
 // Torso/arms/legs are white-base — tinted per player colour at runtime.
 // Head is not tinted — draw it with the intended face colours.
 
-import { writeFileSync, mkdirSync } from 'node:fs';
-import { deflateSync }              from 'node:zlib';
+import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { deflateSync }                          from 'node:zlib';
+
+// Only writes a file if it doesn't already exist — preserves custom art.
+// Pass --force to regenerate all files regardless.
+const FORCE = process.argv.includes('--force');
+function writeSprite(filePath, buffer) {
+  if (!FORCE && existsSync(filePath)) {
+    console.log(`Skipped  ${filePath}  (already exists — use --force to overwrite)`);
+    return;
+  }
+  writeFileSync(filePath, buffer);
+}
 
 // ── Minimal PNG encoder ───────────────────────────────────────────────────────
 
@@ -129,6 +140,36 @@ function platformPx(x, y) {
   return [120, 70, 30, Math.round((1 - (y - 20) / 5) * 180)]; // fading underside
 }
 
+// monster_head.png  60×60  — blob creature: green body, yellow eyes, white fangs
+function monsterHeadPx(x, y) {
+  const cx = 29.5, cy = 29.5;
+  const d = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2);
+  if (d > 29) return [0, 0, 0, 0];                              // outside blob
+  if (d > 24) return [30, 90, 20, 255];                         // dark outline
+  // left eye: small yellow circle at (14,18)
+  const el = Math.sqrt((x - 14) ** 2 + (y - 18) ** 2);
+  if (el < 7) return el < 4 ? [20, 20, 20, 255] : [255, 220, 40, 255];
+  // right eye: small yellow circle at (45,18)
+  const er = Math.sqrt((x - 45) ** 2 + (y - 18) ** 2);
+  if (er < 7) return er < 4 ? [20, 20, 20, 255] : [255, 220, 40, 255];
+  // mouth grin (y 36-42, x 12-48)
+  if (y >= 36 && y <= 42 && x >= 12 && x <= 48) {
+    if (y === 36 || y === 42) return [30, 90, 20, 255];          // mouth border
+    // fangs
+    if ((x >= 16 && x <= 20) || (x >= 24 && x <= 28) ||
+        (x >= 32 && x <= 36) || (x >= 40 && x <= 44)) return [245, 245, 245, 255];
+    return [20, 20, 20, 255];                                     // dark mouth interior
+  }
+  return [60, 160, 40, 255];                                     // green body
+}
+
+// monster_leg.png  10×30  — stubby orange-green leg, pivot at top
+function monsterLegPx(x, y) {
+  if (x === 0 || x === 9 || y === 29) return [30, 90, 20, 255]; // outline
+  if (y < 10)  return [80, 180, 50, 255];                        // upper lighter
+  return [50, 140, 30, 255];                                     // lower darker
+}
+
 // ── Write files ───────────────────────────────────────────────────────────────
 
 // scale2x: doubles canvas size of any pixel function without changing shapes
@@ -136,21 +177,17 @@ const scale2x = (fn) => (x, y) => fn(x / 2, y / 2);
 
 mkdirSync('public/sprites', { recursive: true });
 // Character body parts — 2× resolution for detailed pixel art; display sizes in app.ts unchanged
-writeFileSync('public/sprites/head.png',  makePNG(40, 44, scale2x(headPx)));
-writeFileSync('public/sprites/torso.png', makePNG(24, 56, scale2x(torsoPx)));
-writeFileSync('public/sprites/arm.png',   makePNG(16, 40, scale2x(armPx)));
-writeFileSync('public/sprites/leg.png',   makePNG(16, 44, scale2x(legPx)));
-writeFileSync('public/sprites/gun.png',   makePNG(36, 28, scale2x(gunPx)));
+writeSprite('public/sprites/head.png',  makePNG(40, 44, scale2x(headPx)));
+writeSprite('public/sprites/torso.png', makePNG(24, 56, scale2x(torsoPx)));
+writeSprite('public/sprites/arm.png',   makePNG(16, 40, scale2x(armPx)));
+writeSprite('public/sprites/leg.png',   makePNG(16, 44, scale2x(legPx)));
+writeSprite('public/sprites/gun.png',   makePNG(36, 28, scale2x(gunPx)));
+// Monster parts — 2× resolution; display 60×60 head, 10×30 legs
+writeSprite('public/sprites/monster_head.png', makePNG(120, 120, scale2x(monsterHeadPx)));
+writeSprite('public/sprites/monster_leg.png',  makePNG(20,  60,  scale2x(monsterLegPx)));
 // Other sprites — unchanged
-writeFileSync('public/sprites/fireball.png', makePNG(36, 36, fireballPx));
-writeFileSync('public/sprites/life_dot.png', makePNG(10, 10, lifeDotPx));
-writeFileSync('public/sprites/platform.png', makePNG(64, 26, platformPx));
+writeSprite('public/sprites/fireball.png', makePNG(36, 36, fireballPx));
+writeSprite('public/sprites/life_dot.png', makePNG(10, 10, lifeDotPx));
+writeSprite('public/sprites/platform.png', makePNG(64, 26, platformPx));
 
-console.log('Wrote public/sprites/head.png      (40×44,  2× — display 20×22)');
-console.log('Wrote public/sprites/torso.png     (24×56,  2× — display 12×28)');
-console.log('Wrote public/sprites/arm.png       (16×40,  2× — display 8×20)');
-console.log('Wrote public/sprites/leg.png       (16×44,  2× — display 8×22)');
-console.log('Wrote public/sprites/gun.png       (36×28,  2× — display 38×14)');
-console.log('Wrote public/sprites/fireball.png  (36×36)');
-console.log('Wrote public/sprites/life_dot.png  (10×10)');
-console.log('Wrote public/sprites/platform.png  (64×26)');
+console.log('Done. Run with --force to regenerate all sprites regardless of existing files.');

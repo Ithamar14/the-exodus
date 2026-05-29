@@ -164,6 +164,16 @@ public sealed record PlayerSnapshot(
     int Lives = 3,
     bool IsInvincible = false);
 
+public sealed record MonsterSnapshot(string Id, float X, float Y, int FacingDir, int Hp, bool IsPaused);
+
+public sealed record MonsterSpawnDto(string Id, float X, float Y);
+public sealed record MonsterSpawnsUpdatedPayload(IReadOnlyList<MonsterSpawnDto> Spawns);
+
+public sealed class ApplyMonsterSpawnsRequest
+{
+    public List<MonsterSpawnDto> Spawns { get; set; } = new();
+}
+
 public sealed record WorldSnapshot(
     long Tick,
     long ServerTimeMs,
@@ -174,4 +184,5 @@ public sealed record WorldSnapshot(
     IReadOnlyList<GameEventSnapshot> Events,
     string? WinnerPlayerId,
     bool GameOver,
-    IReadOnlyList<FireballSnapshot> Fireballs);
+    IReadOnlyList<FireballSnapshot> Fireballs,
+    IReadOnlyList<MonsterSnapshot> Monsters);

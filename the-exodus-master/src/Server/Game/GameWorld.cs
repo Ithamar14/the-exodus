@@ -73,6 +73,20 @@ public sealed class GameWorld
     private readonly List<FireballState> _fireballs = [];
     private long _nextFireballId;
 
+    private readonly List<MonsterSpawn> _monsterSpawns = [];
+    private readonly List<MonsterState> _monsters = [];
+    private long _nextMonsterId = 1;
+
+    private const float MonsterHalfHeight = 45f;  // head(60)+legs(30)=90 total, half=45
+    private const float MonsterHalfWidth  = 30f;  // head is 60px wide, half=30
+    private const float MonsterWalkSpeed     = 80f;
+    private const float MonsterWalkMin       = 1.0f;
+    private const float MonsterWalkMax       = 4.0f;
+    private const float MonsterPauseMin      = 0.5f;
+    private const float MonsterPauseMax      = 2.2f;
+    private const float MonsterContactRadius = 38f;
+    private float EffectiveMonsterGroundY => WorldHeight - 61f - MonsterHalfHeight;
+
     public GameWorld()
         : this(new SystemGameRandom(), GameRules.Default)
     {
@@ -288,9 +302,11 @@ public sealed class GameWorld
 
             if (_phase == RoundPhase.Active)
             {
+                TickMonsters(deltaSeconds, events);
                 AdvanceWave(deltaSeconds, events);
                 AdvanceCloud(deltaSeconds, events);
                 ResolveCollisions(events);
+                ResolveMonsterPlayerContact(events);
                 ResolveWaveDeaths(events);
                 ResolveOutOfBoundsDeaths(events);
                 AdvanceManna(deltaSeconds, events);
@@ -334,6 +350,20 @@ public sealed class GameWorld
             player.VelocityY = 0f;
             player.IsGrounded = false;
             player.JumpRequested = false;
+        }
+
+        SpawnMonstersFromSpawns();
+    }
+
+    private void SpawnMonstersFromSpawns()
+    {
+        _monsters.Clear();
+        foreach (var spawn in _monsterSpawns)
+        {
+            var monster = new MonsterState($"m-{_nextMonsterId++}", spawn.X, spawn.Y);
+            monster.FacingDir = _random.NextInt(2) == 0 ? 1 : -1;
+            monster.StateTimer = Lerp(0f, MonsterWalkMax, _random.NextSingle());
+            _monsters.Add(monster);
         }
     }
 
@@ -474,6 +504,18 @@ public sealed class GameWorld
             if (hit is not null)
             {
                 Kill(hit, "fireball", events);
+                _fireballs.RemoveAt(i);
+                continue;
+            }
+
+            var monsterHit = _monsters.FirstOrDefault(m =>
+                m.Hp > 0 &&
+                m.InvincibilityRemaining <= 0f &&
+                IsWithinRadius(fb.X, fb.Y, m.X, m.Y, hitRadius));
+
+            if (monsterHit is not null)
+            {
+                DamageMonster(monsterHit, events);
                 _fireballs.RemoveAt(i);
             }
         }
@@ -972,7 +1014,8 @@ public sealed class GameWorld
             events,
             _winnerPlayerId,
             _winnerPlayerId is not null,
-            _fireballs.Select(fb => new FireballSnapshot(fb.Id, fb.OwnerId, fb.X, fb.Y, fb.DirX)).ToArray());
+            _fireballs.Select(fb => new FireballSnapshot(fb.Id, fb.OwnerId, fb.X, fb.Y, fb.DirX)).ToArray(),
+            _monsters.Select(m => new MonsterSnapshot(m.Id, m.X, m.Y, m.FacingDir, m.Hp, m.IsPaused)).ToArray());
     }
 
     private MannaSnapshot BuildMannaSnapshot()
@@ -1022,6 +1065,8 @@ public sealed class GameWorld
         _phase = RoundPhase.WaitingToStart;
         _winnerPlayerId = null;
         _winnerCheckEnabled = false;
+        _monsters.Clear();
+        _monsterSpawns.Clear();
         ResetAvailablePlayerColors();
         ResetRoundMechanics();
     }
@@ -1031,6 +1076,7 @@ public sealed class GameWorld
         _phase = RoundPhase.WaitingToStart;
         _winnerPlayerId = null;
         _winnerCheckEnabled = false;
+        _monsters.Clear();
         ResetRoundMechanics();
 
         foreach (var player in _playersByConnection.Values)
@@ -1163,6 +1209,175 @@ public sealed class GameWorld
         var x = Lerp(minX, Math.Max(minX, maxX), _random.NextSingle());
         var y = Lerp(minY, Math.Max(minY, maxY), _random.NextSingle());
         return new CloudState(x, y, radius, _rules.CloudActiveSeconds);
+    }
+
+    private void TickMonsters(float deltaSeconds, ICollection<GameEventSnapshot> events)
+    {
+        foreach (var monster in _monsters)
+        {
+            if (monster.Hp <= 0) continue;
+
+            monster.VelocityY += _rules.Gravity * deltaSeconds;
+            monster.StateTimer -= deltaSeconds;
+            UpdateMonsterAI(monster);
+            ApplyMonsterPhysics(monster, deltaSeconds);
+
+            if (monster.InvincibilityRemaining > 0f)
+                monster.InvincibilityRemaining = MathF.Max(0f, monster.InvincibilityRemaining - deltaSeconds);
+        }
+    }
+
+    private void UpdateMonsterAI(MonsterState monster)
+    {
+        if (monster.IsPaused)
+        {
+            monster.VelocityX = 0f;
+            if (monster.StateTimer <= 0f)
+            {
+                monster.IsPaused = false;
+                monster.FacingDir = ChooseMonsterDirection(monster);
+                monster.StateTimer = Lerp(MonsterWalkMin, MonsterWalkMax, _random.NextSingle());
+            }
+            return;
+        }
+
+        // At a ledge: try opposite direction, otherwise pause briefly and reassess
+        if (monster.IsGrounded && !HasGroundAheadForMonster(monster, monster.FacingDir))
+        {
+            if (HasGroundAheadForMonster(monster, -monster.FacingDir))
+            {
+                monster.FacingDir = -monster.FacingDir;
+            }
+            else
+            {
+                monster.IsPaused = true;
+                monster.VelocityX = 0f;
+                monster.StateTimer = Lerp(MonsterPauseMin, MonsterPauseMax, _random.NextSingle());
+                return;
+            }
+        }
+
+        monster.VelocityX = monster.FacingDir * MonsterWalkSpeed;
+
+        if (monster.StateTimer <= 0f)
+        {
+            monster.IsPaused = true;
+            monster.VelocityX = 0f;
+            monster.StateTimer = Lerp(MonsterPauseMin, MonsterPauseMax, _random.NextSingle());
+        }
+    }
+
+    private int ChooseMonsterDirection(MonsterState monster)
+    {
+        var canForward  = HasGroundAheadForMonster(monster,  monster.FacingDir);
+        var canBackward = HasGroundAheadForMonster(monster, -monster.FacingDir);
+        if (canForward && canBackward)
+            return _random.NextInt(2) == 0 ? monster.FacingDir : -monster.FacingDir;
+        if (canBackward) return -monster.FacingDir;
+        return monster.FacingDir;
+    }
+
+    private void ApplyMonsterPhysics(MonsterState monster, float deltaSeconds)
+    {
+        var prevFeetY = monster.Y + MonsterHalfHeight;
+        monster.X += monster.VelocityX * deltaSeconds;
+        monster.Y += monster.VelocityY * deltaSeconds;
+        monster.X = Math.Clamp(monster.X, MonsterHalfWidth, WorldWidth - MonsterHalfWidth);
+        var newFeetY = monster.Y + MonsterHalfHeight;
+
+        if (monster.Y >= EffectiveMonsterGroundY)
+        {
+            monster.Y = EffectiveMonsterGroundY;
+            monster.VelocityY = 0f;
+            monster.IsGrounded = true;
+        }
+        else
+        {
+            monster.IsGrounded = false;
+            if (monster.VelocityY >= 0f)
+            {
+                foreach (var (cx, surfaceY, width) in _platforms)
+                {
+                    if (prevFeetY > surfaceY || newFeetY < surfaceY) continue;
+                    if (monster.X < cx - width * 0.5f || monster.X > cx + width * 0.5f) continue;
+                    monster.Y = surfaceY - MonsterHalfHeight;
+                    monster.VelocityY = 0f;
+                    monster.IsGrounded = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    private bool HasGroundAheadForMonster(MonsterState monster, int direction)
+    {
+        var lookX = monster.X + direction * (MonsterHalfWidth + 4f);
+        if (lookX < 0f || lookX > WorldWidth) return false;
+
+        var feetY = monster.Y + MonsterHalfHeight;
+
+        if (monster.Y >= EffectiveMonsterGroundY - 2f) return true;
+
+        foreach (var (cx, surfaceY, width) in _platforms)
+        {
+            if (lookX >= cx - width * 0.5f && lookX <= cx + width * 0.5f)
+                if (Math.Abs(surfaceY - feetY) < 3f) return true;
+        }
+        return false;
+    }
+
+    private void ResolveMonsterPlayerContact(ICollection<GameEventSnapshot> events)
+    {
+        foreach (var monster in _monsters)
+        {
+            if (monster.Hp <= 0) continue;
+
+            foreach (var player in _playersByConnection.Values.OrderBy(p => p.JoinOrder))
+            {
+                if (!player.IsAlive || player.InvincibilityRemaining > 0f) continue;
+                if (!IsWithinRadius(monster.X, monster.Y, player.X, player.Y, MonsterContactRadius)) continue;
+
+                Kill(player, "monster", events);
+            }
+        }
+    }
+
+    private void DamageMonster(MonsterState monster, ICollection<GameEventSnapshot> events)
+    {
+        monster.Hp--;
+        if (monster.Hp <= 0)
+        {
+            monster.Hp = 0;
+            events.Add(new GameEventSnapshot("monster_died", X: monster.X, Y: monster.Y));
+        }
+        else
+        {
+            monster.InvincibilityRemaining = 0.8f;
+            events.Add(new GameEventSnapshot("monster_hit", X: monster.X, Y: monster.Y));
+        }
+    }
+
+    public IReadOnlyList<MonsterSpawnDto> GetMonsterSpawns()
+    {
+        lock (_sync)
+        {
+            return _monsterSpawns.Select(s => new MonsterSpawnDto(s.Id, s.X, s.Y)).ToArray();
+        }
+    }
+
+    public (bool Success, string? Reason) TryApplyMonsterSpawns(string connectionId, List<MonsterSpawnDto> spawns)
+    {
+        lock (_sync)
+        {
+            if (_phase == RoundPhase.Active) return (false, "round_active");
+            if (!TryGetPlayerByConnection(connectionId, out var player) || player.Id != _starterPlayerId)
+                return (false, "not_authorized");
+
+            _monsterSpawns.Clear();
+            foreach (var s in spawns)
+                _monsterSpawns.Add(new MonsterSpawn(s.Id, s.X, s.Y));
+        }
+        return (true, null);
     }
 
     private static bool IsWithinRadius(float x1, float y1, float x2, float y2, float radius)
@@ -1467,6 +1682,28 @@ public sealed class GameWorld
         public int FacingDir { get; set; } = 1;
         public bool JumpRequested { get; set; }
         public bool UsePhysics { get; set; }
+    }
+
+    private sealed class MonsterSpawn(string id, float x, float y)
+    {
+        public string Id { get; } = id;
+        public float X { get; } = x;
+        public float Y { get; } = y;
+    }
+
+    private sealed class MonsterState(string id, float x, float y)
+    {
+        public string Id { get; } = id;
+        public float X { get; set; } = x;
+        public float Y { get; set; } = y;
+        public float VelocityX { get; set; }
+        public float VelocityY { get; set; }
+        public bool IsGrounded { get; set; }
+        public int FacingDir { get; set; } = 1;
+        public int Hp { get; set; } = 2;
+        public bool IsPaused { get; set; }
+        public float StateTimer { get; set; } = MonsterWalkMax;
+        public float InvincibilityRemaining { get; set; }
     }
 
     private sealed class FireballState(string id, string ownerId, float x, float y, int dirX)

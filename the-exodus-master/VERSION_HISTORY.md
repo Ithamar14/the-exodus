@@ -1,5 +1,24 @@
 # Version History
 
+## v1.0.0 — Enemy monsters
+**Status:** Main build
+
+### What Was Built
+- **Monster enemy** — server-authoritative enemy entity with full physics (gravity, platform landing, no jumping)
+- **Monster AI** — patrol behaviour with randomised walk (1–4 s) and pause (0.5–2.2 s) durations; monsters are staggered so they don't move in sync; direction is re-chosen randomly on each resume (50/50 flip when both ways are clear, always turns back from ledges)
+- **Ledge detection** — monsters check for ground one step ahead each tick and turn around at platform edges; if cornered on both sides they pause briefly and reassess
+- **Combat** — monster deals 1 life to any player it touches (with player invincibility frames); takes 1 damage from fireballs (0.8 s invincibility after hit); 2 HP total, disappears when killed
+- **Monster sprites** — `monster_head.png` (60×60 green blob, yellow eyes, fangs) and `monster_leg.png` (10×30 stubby leg), both 2× resolution placeholders; 4 legs with alternating walk animation, 2 HP dots above head
+- **Level editor** — new "＋ Add Monster" toggle button; click to place orange circle spawn markers; click to select, Delete to remove; spawn positions persist across rounds and are broadcast to all clients via `MonsterSpawnsUpdated`
+- **Sprite generator safety** — `gen-sprites.mjs` now skips files that already exist, preserving custom art; use `--force` to regenerate all
+
+### Protocol additions
+- `MonsterSnapshot` in every `WorldSnapshot` (id, x, y, facingDir, hp, isPaused)
+- `MonsterSpawnDto` / `MonsterSpawnsUpdated` hub message
+- `ApplyMonsterSpawns` hub method
+- `GetRules` also returns current monster spawns on join
+- New event types: `monster_hit`, `monster_died`, `player_lost_life`
+
 ## v0.1.1 — Level editor, sprite-driven character model
 **Status:** Main build
 
