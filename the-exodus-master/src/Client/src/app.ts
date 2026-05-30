@@ -24,11 +24,13 @@ import {
   type WorldSnapshot,
   type CloudSnapshot,
   type WaveSnapshot,
-  type FireballSnapshot,
   type MonsterSnapshot,
   type MonsterSpawnDto,
   type SceneryObjectDto,
   type SceneryLibraryEntry,
+  type WeaponSpawnDto,
+  type ProjectileSnapshot,
+  type WeaponSpawnSnapshot,
   GROUND_Y,
   WORLD_HEIGHT,
   WORLD_WIDTH,
@@ -77,6 +79,8 @@ type UiRefs = {
   editorOverlay: HTMLElement;
   editorAddToggle: HTMLButtonElement;
   editorMonsterAddToggle: HTMLButtonElement;
+  editorWeaponAddToggle: HTMLButtonElement;
+  editorWeaponTypeSelect: HTMLSelectElement;
   editorMapName: HTMLInputElement;
   editorSaveBtn: HTMLButtonElement;
   editorLoadSelect: HTMLSelectElement;
@@ -137,10 +141,13 @@ function makeDefaultPlatforms(): PlatformDto[] {
   ];
 }
 
-type FireballVisual = {
+// Unified visual for all projectile types. Trail fields only used by fireball.
+type ProjectileVisual = {
+  type: string;
   x: number;
   y: number;
-  dirX: number;
+  vX: number;  // used for fireball direction + arrow rotation
+  vY: number;
   trail: Array<{ x: number; y: number }>;
   trailTimer: number;
   sprite: Phaser.GameObjects.Image;
@@ -398,6 +405,11 @@ class PlayerAvatar {
     this.isMoving = view.isMoving;
     this.hasCollectedMannaThisCycle = view.hasCollectedMannaThisCycle;
     this.isInvincible = view.isInvincible;
+
+    const weaponKey = view.weapon === "bow" ? "weapon_bow"
+      : view.weapon === "sword" ? "weapon_sword"
+      : "weapon_staff";
+    if (this.gun.texture.key !== weaponKey) this.gun.setTexture(weaponKey);
 
     const lives = view.lives;
     for (let i = 0; i < this.liveDots.length; i++) {
@@ -1159,7 +1171,6 @@ class DesertScene extends Phaser.Scene {
   private victorySubtitle: Phaser.GameObjects.Text | null = null;
   private nextVictoryConfettiAt = 0;
   private currentView: RoundView | null = null;
-  private readonly fireballs = new Map<string, FireballVisual>();
   private fireballGfx!: Phaser.GameObjects.Graphics;
   private debugHitboxGfx!: Phaser.GameObjects.Graphics;
   public debugHitboxes = false;
@@ -1167,8 +1178,10 @@ class DesertScene extends Phaser.Scene {
   private currentPlatforms: PlatformDto[] = [];
   private currentMonsters: MonsterSnapshot[] = [];
   private readonly monsterAvatars = new Map<string, MonsterAvatar>();
+  private readonly projectiles = new Map<string, ProjectileVisual>();
+  private readonly weaponSpawnImages = new Map<string, Phaser.GameObjects.Image>();
   private editorGfx: Phaser.GameObjects.Graphics | null = null;
-  private editorInteraction: 'add' | 'add-monster' | 'add-object' | 'move' | null = null;
+  private editorInteraction: 'add' | 'add-monster' | 'add-object' | 'add-weapon' | 'move' | null = null;
   private editorPlatformsRef: PlatformDto[] | null = null;
   private editorOnChange: ((platforms: PlatformDto[]) => void) | null = null;
   private editorOnApply: (() => void) | null = null;
@@ -1233,6 +1246,11 @@ class DesertScene extends Phaser.Scene {
     this.load.image('platform',      'sprites/platform.png');
     this.load.image('monster_head',  'sprites/monster_head.png');
     this.load.image('monster_leg',   'sprites/monster_leg.png');
+    this.load.image('weapon_staff',  'sprites/weapon_staff.png');
+    this.load.image('weapon_bow',    'sprites/weapon_bow.png');
+    this.load.image('weapon_sword',  'sprites/weapon_sword.png');
+    this.load.image('arrow',         'sprites/arrow.png');
+    this.load.image('sword_swing',   'sprites/sword_swing.png');
   }
 
   public create(): void {
@@ -1305,7 +1323,13 @@ class DesertScene extends Phaser.Scene {
     }
   }
 
-  public syncRound(view: RoundView, selfId: string | null, fireballs: FireballSnapshot[] = [], monsters: MonsterSnapshot[] = []): void {
+  public syncRound(
+    view: RoundView,
+    selfId: string | null,
+    projectiles: ProjectileSnapshot[] = [],
+    monsters: MonsterSnapshot[] = [],
+    weaponSpawns: WeaponSpawnSnapshot[] = []
+  ): void {
     this.currentView = view;
     if (!this.cloudOverlay || !this.waveOverlay || !this.decorations) {
       return;
@@ -1318,7 +1342,8 @@ class DesertScene extends Phaser.Scene {
     this.syncVictory(view);
     this.mannaDirector?.sync(view);
     this.playEvents(view.events, view);
-    this.syncFireballs(fireballs);
+    this.syncProjectiles(projectiles);
+    this.syncWeaponSpawns(weaponSpawns);
   }
 
   public syncMonsters(monsters: MonsterSnapshot[]): void {
@@ -1341,50 +1366,99 @@ class DesertScene extends Phaser.Scene {
     }
   }
 
-  public syncFireballs(serverFireballs: FireballSnapshot[]): void {
-    // remove fireballs no longer on server
-    const serverIds = new Set(serverFireballs.map((fb) => fb.id));
-    for (const [id, fb] of this.fireballs.entries()) {
-      if (!serverIds.has(id)) {
-        fb.sprite.destroy();
-        this.fireballs.delete(id);
+  public syncProjectiles(serverProjectiles: ProjectileSnapshot[]): void {
+    const seen = new Set<string>();
+    for (const p of serverProjectiles) {
+      seen.add(p.id);
+      const existing = this.projectiles.get(p.id);
+      if (existing) {
+        existing.x = p.x;
+        existing.y = p.y;
+        existing.vX = p.vX;
+        existing.vY = p.vY;
+        if (p.type === 'arrow') {
+          existing.sprite.setPosition(p.x, p.y).setRotation(Math.atan2(p.vY, p.vX));
+        } else if (p.type !== 'fireball') {
+          // non-prediction types: always sync position directly from server
+          existing.sprite.setPosition(p.x, p.y);
+        }
+        // fireball: x is client-predicted in updateProjectiles; y stays constant (vY=0)
+      } else {
+        const sprite = this.createProjectileSprite(p);
+        this.projectiles.set(p.id, { type: p.type, x: p.x, y: p.y, vX: p.vX, vY: p.vY, trail: [], trailTimer: 0, sprite });
+        if (p.type === 'fireball') this.avatars.get(p.ownerId)?.triggerRecoil();
       }
     }
-    // add or update from server
-    for (const fb of serverFireballs) {
-      const existing = this.fireballs.get(fb.id);
-      if (existing) {
-        existing.x = fb.x;
-        existing.y = fb.y;
-      } else {
-        const sprite = this.add.image(fb.x, fb.y, 'fireball').setDisplaySize(36, 36).setDepth(701).setFlipX(fb.dirX < 0);
-        this.fireballs.set(fb.id, { x: fb.x, y: fb.y, dirX: fb.dirX, trail: [], trailTimer: 0, sprite });
-        this.avatars.get(fb.ownerId)?.triggerRecoil();
-      }
+    for (const [id, vis] of this.projectiles) {
+      if (!seen.has(id)) { vis.sprite.destroy(); this.projectiles.delete(id); }
     }
   }
 
-  private updateFireballs(delta: number): void {
+  private createProjectileSprite(p: ProjectileSnapshot): Phaser.GameObjects.Image {
+    switch (p.type) {
+      case 'arrow':
+        return this.add.image(p.x, p.y, 'arrow')
+          .setDepth(700)
+          .setRotation(Math.atan2(p.vY, p.vX));
+      case 'sword_swing':
+        return this.add.image(p.x, p.y, 'sword_swing')
+          .setDisplaySize(p.w || 90, p.h || 60)
+          .setDepth(702)
+          .setAlpha(0.85);
+      default: // fireball
+        return this.add.image(p.x, p.y, 'fireball')
+          .setDisplaySize(36, 36)
+          .setDepth(701)
+          .setFlipX(p.vX < 0);
+    }
+  }
+
+  public syncWeaponSpawns(spawns: WeaponSpawnSnapshot[]): void {
+    const seen = new Set<string>();
+    for (const s of spawns) {
+      seen.add(s.id);
+      const textureKey = s.type === "bow" ? "weapon_bow"
+        : s.type === "sword" ? "weapon_sword"
+        : "weapon_staff";
+      if (s.available) {
+        if (!this.weaponSpawnImages.has(s.id)) {
+          const img = this.add.image(s.x, s.y, textureKey)
+            .setDisplaySize(32, 32)
+            .setDepth(6)
+            .setAlpha(0.9);
+          this.weaponSpawnImages.set(s.id, img);
+        }
+      } else {
+        const existing = this.weaponSpawnImages.get(s.id);
+        if (existing) { existing.destroy(); this.weaponSpawnImages.delete(s.id); }
+      }
+    }
+    for (const [id, img] of this.weaponSpawnImages) {
+      if (!seen.has(id)) { img.destroy(); this.weaponSpawnImages.delete(id); }
+    }
+  }
+
+  private updateProjectiles(delta: number): void {
     const dt = delta / 1000;
     this.fireballGfx.clear();
 
-    for (const fb of this.fireballs.values()) {
-      fb.x += fb.dirX * FIREBALL_SPEED * dt;
+    for (const vis of this.projectiles.values()) {
+      if (vis.type !== 'fireball') continue;  // only fireballs need client-side prediction + trail
 
-      fb.trailTimer++;
-      if (fb.trailTimer >= FIREBALL_TRAIL_EVERY) {
-        fb.trailTimer = 0;
-        fb.trail.unshift({ x: fb.x, y: fb.y });
-        if (fb.trail.length > FIREBALL_TRAIL_MAX) fb.trail.pop();
+      vis.x += Math.sign(vis.vX) * FIREBALL_SPEED * dt;
+      vis.trailTimer++;
+      if (vis.trailTimer >= FIREBALL_TRAIL_EVERY) {
+        vis.trailTimer = 0;
+        vis.trail.unshift({ x: vis.x, y: vis.y });
+        if (vis.trail.length > FIREBALL_TRAIL_MAX) vis.trail.pop();
       }
+      vis.sprite.x = vis.x;
+      vis.sprite.y = vis.y;
 
-      fb.sprite.x = fb.x;
-      fb.sprite.y = fb.y;
-
-      for (let t = 0; t < fb.trail.length; t++) {
-        const frac = 1 - t / fb.trail.length;
+      for (let t = 0; t < vis.trail.length; t++) {
+        const frac = 1 - t / vis.trail.length;
         this.fireballGfx.fillStyle(0xff6600, frac * 0.42);
-        this.fireballGfx.fillCircle(fb.trail[t].x, fb.trail[t].y, 8 * frac);
+        this.fireballGfx.fillCircle(vis.trail[t].x, vis.trail[t].y, 8 * frac);
       }
     }
   }
@@ -1465,7 +1539,7 @@ class DesertScene extends Phaser.Scene {
     this.cloudOverlay?.draw(now, this.cameras.main);
     this.waveOverlay?.draw(now);
     this.mannaDirector?.update(now);
-    this.updateFireballs(delta);
+    this.updateProjectiles(delta);
     this.drawDebugHitboxes();
 
     if (this.currentView?.gameOver && this.currentView.winner && this.decorations && now >= this.nextVictoryConfettiAt) {
@@ -1740,8 +1814,13 @@ class DesertScene extends Phaser.Scene {
     this.updateEditorOverlay(this.editorPlatformsRef ?? []);
   }
 
+  private editorWeaponSpawnsRef: WeaponSpawnDto[] | null = null;
+  private editorWeaponOnChange: ((spawns: WeaponSpawnDto[]) => void) | null = null;
+  private editorSelectedWeaponType: string = "staff";
+  private spawnWeaponIdCounter = 0;
+
   public setEditorInteraction(
-    mode: 'add' | 'add-monster' | 'add-object' | 'move' | null,
+    mode: 'add' | 'add-monster' | 'add-object' | 'add-weapon' | 'move' | null,
     platforms: PlatformDto[] | null,
     monsterSpawns: MonsterSpawnDto[] | null,
     sceneryObjects: SceneryObjectDto[] | null,
@@ -1749,13 +1828,19 @@ class DesertScene extends Phaser.Scene {
     onChange: ((platforms: PlatformDto[]) => void) | null,
     onMonsterChange: ((spawns: MonsterSpawnDto[]) => void) | null,
     onSceneryChange: ((objects: SceneryObjectDto[]) => void) | null,
-    onApply?: (() => void) | null
+    onApply?: (() => void) | null,
+    weaponSpawns?: WeaponSpawnDto[] | null,
+    selectedWeaponType?: string,
+    onWeaponChange?: ((spawns: WeaponSpawnDto[]) => void) | null
   ): void {
     this.editorInteraction = mode;
     this.editorPlatformsRef = platforms;
     this.editorMonsterSpawnsRef = monsterSpawns;
     this.editorSceneryRef = sceneryObjects;
     this.editorSelectedScenery = selectedScenery;
+    this.editorWeaponSpawnsRef = weaponSpawns ?? null;
+    this.editorSelectedWeaponType = selectedWeaponType ?? "staff";
+    this.editorWeaponOnChange = onWeaponChange ?? null;
     this.editorOnChange = onChange;
     this.editorMonsterOnChange = onMonsterChange;
     this.editorSceneryOnChange = onSceneryChange;
@@ -1804,6 +1889,16 @@ class DesertScene extends Phaser.Scene {
           this.editorMonsterOnApply?.();
           this.updateEditorOverlay(this.editorPlatformsRef ?? []);
         }
+      });
+      if (this.game?.canvas) this.game.canvas.style.cursor = 'crosshair';
+    } else if (mode === 'add-weapon') {
+      this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        if (pointer.button !== 0) return;
+        if (!this.editorWeaponSpawnsRef || !this.editorWeaponOnChange) return;
+        const id = `ws-${Date.now()}-${this.spawnWeaponIdCounter++}`;
+        this.editorWeaponSpawnsRef.push({ id, type: this.editorSelectedWeaponType, x: Math.round(pointer.worldX), y: Math.round(pointer.worldY) });
+        this.editorWeaponOnChange(this.editorWeaponSpawnsRef);
+        this.updateEditorOverlay(this.editorPlatformsRef ?? []);
       });
       if (this.game?.canvas) this.game.canvas.style.cursor = 'crosshair';
     } else if (mode === 'add-object') {
@@ -2093,6 +2188,17 @@ class DesertScene extends Phaser.Scene {
         }
       }
     }
+
+    const weaponSpawnsOverlay = this.editorWeaponSpawnsRef;
+    if (weaponSpawnsOverlay) {
+      for (const s of weaponSpawnsOverlay) {
+        const col = s.type === "bow" ? 0x44ffaa : s.type === "sword" ? 0xff8844 : 0xaa44ff;
+        this.editorGfx.lineStyle(2, col, 0.9);
+        this.editorGfx.strokeRect(s.x - 18, s.y - 18, 36, 36);
+        this.editorGfx.fillStyle(col, 0.2);
+        this.editorGfx.fillRect(s.x - 18, s.y - 18, 36, 36);
+      }
+    }
   }
 
   public getSelectedIndex(): number | null { return this.selectedIndex; }
@@ -2156,6 +2262,9 @@ class GameClient {
   private editorSceneryObjects: SceneryObjectDto[] = [];
   private sceneryLibrary: SceneryLibraryEntry[] = [];
   private selectedSceneryKey: string | null = null;
+  private editorWeaponAddMode = false;
+  private editorWeaponSpawns: WeaponSpawnDto[] = [];
+  private selectedWeaponType = "staff";
   private debugHitboxes = false;
 
   private isHost(view: RoundView | null): boolean {
@@ -2271,18 +2380,30 @@ class GameClient {
     });
     this.ui.editorAddToggle.addEventListener("click", () => {
       this.editorAddMode = !this.editorAddMode;
-      if (this.editorAddMode) { this.editorMonsterAddMode = false; this.editorObjAddMode = false; }
+      if (this.editorAddMode) { this.editorMonsterAddMode = false; this.editorObjAddMode = false; this.editorWeaponAddMode = false; }
       this.ui.editorAddToggle.classList.toggle("active", this.editorAddMode);
       this.ui.editorMonsterAddToggle.classList.toggle("active", false);
       this.ui.editorObjAddToggle.classList.toggle("active", false);
+      this.ui.editorWeaponAddToggle.classList.toggle("active", false);
       this.refreshEditorState();
     });
 
     this.ui.editorMonsterAddToggle.addEventListener("click", () => {
       this.editorMonsterAddMode = !this.editorMonsterAddMode;
-      if (this.editorMonsterAddMode) { this.editorAddMode = false; this.editorObjAddMode = false; }
+      if (this.editorMonsterAddMode) { this.editorAddMode = false; this.editorObjAddMode = false; this.editorWeaponAddMode = false; }
       this.ui.editorMonsterAddToggle.classList.toggle("active", this.editorMonsterAddMode);
       this.ui.editorAddToggle.classList.toggle("active", false);
+      this.ui.editorObjAddToggle.classList.toggle("active", false);
+      this.ui.editorWeaponAddToggle.classList.toggle("active", false);
+      this.refreshEditorState();
+    });
+
+    this.ui.editorWeaponAddToggle.addEventListener("click", () => {
+      this.editorWeaponAddMode = !this.editorWeaponAddMode;
+      if (this.editorWeaponAddMode) { this.editorAddMode = false; this.editorMonsterAddMode = false; this.editorObjAddMode = false; }
+      this.ui.editorWeaponAddToggle.classList.toggle("active", this.editorWeaponAddMode);
+      this.ui.editorAddToggle.classList.toggle("active", false);
+      this.ui.editorMonsterAddToggle.classList.toggle("active", false);
       this.ui.editorObjAddToggle.classList.toggle("active", false);
       this.refreshEditorState();
     });
@@ -2314,7 +2435,7 @@ class GameClient {
 
     window.addEventListener("keydown", (event) => {
       // Delete works in editor even before joining.
-      if (event.key === "Delete" && this.editorOpen && !this.editorAddMode && !this.editorMonsterAddMode && !this.editorObjAddMode && !(document.activeElement instanceof HTMLInputElement)) {
+      if (event.key === "Delete" && this.editorOpen && !this.editorAddMode && !this.editorMonsterAddMode && !this.editorObjAddMode && !this.editorWeaponAddMode && !(document.activeElement instanceof HTMLInputElement)) {
         const sceneryIdx = this.scene.getSelectedSceneryIndex();
         if (sceneryIdx !== null) {
           this.editorSceneryObjects.splice(sceneryIdx, 1);
@@ -2397,7 +2518,7 @@ class GameClient {
           break;
         case "q":
         case "Q":
-          this.sendFireball();
+          this.sendAttack();
           break;
         case "Delete":
           // Handled above (pre-join compatible).
@@ -2509,6 +2630,10 @@ class GameClient {
     this.connection.on("SceneryObjectsUpdated", (payload: { objects: SceneryObjectDto[] }) => {
       this.editorSceneryObjects = payload.objects;
       this.scene.syncScenery(payload.objects);
+    });
+
+    this.connection.on("WeaponSpawnsUpdated", (payload: { spawns: WeaponSpawnDto[] }) => {
+      this.editorWeaponSpawns = payload.spawns;
     });
 
     this.connection.on("MapList", (payload: { names: string[] }) => {
@@ -2688,12 +2813,12 @@ class GameClient {
     void this.connection.send("SetInput", { dirX, jump });
   }
 
-  private sendFireball(): void {
+  private sendAttack(): void {
     if (!this.connection || this.connection.state !== HubConnectionState.Connected || !this.selfId) {
       return;
     }
 
-    void this.connection.send("ShootFireball");
+    void this.connection.send("Attack");
   }
 
   private sendEmote(code: EmoteCode): void {
@@ -2718,7 +2843,10 @@ class GameClient {
         this.scene.setLocalPlayerId(null);
       }
     }
-    this.scene.syncRound(view, this.selfId, snapshot.fireballs ?? [], snapshot.monsters ?? []);
+    this.scene.syncRound(view, this.selfId,
+      snapshot.projectiles ?? [],
+      snapshot.monsters ?? [],
+      snapshot.weaponSpawns ?? []);
     this.updateRoundPanel(view);
     this.updateSpecialNotices(view);
     this.updateDebugState(view);
@@ -3158,13 +3286,14 @@ class GameClient {
     this.ui.editorAddToggle.classList.toggle("active", this.editorAddMode);
     this.ui.editorMonsterAddToggle.classList.toggle("active", this.editorMonsterAddMode);
     this.ui.editorObjAddToggle.classList.toggle("active", this.editorObjAddMode);
+    this.ui.editorWeaponAddToggle.classList.toggle("active", this.editorWeaponAddMode);
     if (this.editorOpen) {
       // Fetch current state from server when opening pre-join.
       if (!this.selfId && this.connection?.state === HubConnectionState.Connected) {
         void this.connection.send("GetRules");
         void this.loadSceneryLibrary();
       }
-      const mode = this.editorAddMode ? 'add' : this.editorMonsterAddMode ? 'add-monster' : this.editorObjAddMode ? 'add-object' : 'move';
+      const mode = this.editorAddMode ? 'add' : this.editorMonsterAddMode ? 'add-monster' : this.editorObjAddMode ? 'add-object' : this.editorWeaponAddMode ? 'add-weapon' : 'move';
       const libEntry = this.selectedSceneryKey
         ? (this.sceneryLibrary.find(e => e.key === this.selectedSceneryKey) ?? null)
         : null;
@@ -3177,10 +3306,13 @@ class GameClient {
         (platforms) => { this.editorPlatforms = platforms; },
         (spawns) => { this.editorMonsterSpawns = spawns; },
         (objects) => { this.editorSceneryObjects = objects; void this.applyScenery(); },
-        () => { void this.applyPlatforms(); void this.applyMonsterSpawns(); }
+        () => { void this.applyPlatforms(); void this.applyMonsterSpawns(); },
+        this.editorWeaponSpawns,
+        this.selectedWeaponType,
+        (spawns) => { this.editorWeaponSpawns = spawns; void this.applyWeaponSpawns(); }
       );
     } else {
-      this.scene.setEditorInteraction(null, null, null, null, null, null, null, null);
+      this.scene.setEditorInteraction(null, null, null, null, null, null, null, null, null, null, "staff", null);
       this.scene.resetCameraZoom();
     }
   }
@@ -3267,12 +3399,19 @@ class GameClient {
     } catch { /* silent — live apply is best-effort */ }
   }
 
+  private async applyWeaponSpawns(): Promise<void> {
+    if (!this.connection || this.connection.state !== HubConnectionState.Connected) return;
+    try {
+      await this.connection.send("ApplyWeaponSpawns", { spawns: this.editorWeaponSpawns });
+    } catch { /* silent — live apply is best-effort */ }
+  }
+
   private async saveMap(): Promise<void> {
     if (!this.connection || this.connection.state !== HubConnectionState.Connected) return;
     const name = this.ui.editorMapName.value.trim();
     if (!name) { this.showEditorNotice("Enter a map name.", "danger"); return; }
     try {
-      await this.connection.send("SaveMap", { name, platforms: this.editorPlatforms, sceneryObjects: this.editorSceneryObjects });
+      await this.connection.send("SaveMap", { name, platforms: this.editorPlatforms, sceneryObjects: this.editorSceneryObjects, weaponSpawns: this.editorWeaponSpawns });
       this.showEditorNotice("Map saved.", "success");
     } catch {
       this.showEditorNotice("Save failed.", "danger");
@@ -3360,6 +3499,14 @@ function renderShell(): UiRefs {
         </div>
         <button class="editor-toggle-btn" id="editor-add-toggle" type="button">＋ Add Platform</button>
         <button class="editor-toggle-btn" id="editor-monster-add-toggle" type="button">＋ Add Monster</button>
+        <div class="editor-map-bar">
+          <button class="editor-toggle-btn" id="editor-weapon-add-toggle" type="button">＋ Add Weapon</button>
+          <select id="editor-weapon-type-select">
+            <option value="staff">Staff</option>
+            <option value="bow">Bow</option>
+            <option value="sword">Sword</option>
+          </select>
+        </div>
         <button class="editor-toggle-btn" id="editor-zoom-fit-btn" type="button">⊞ Zoom to Fit</button>
         <button class="editor-toggle-btn" id="editor-obj-add-toggle" type="button">＋ Place Object</button>
         <div class="editor-map-bar">
@@ -3426,6 +3573,8 @@ function renderShell(): UiRefs {
     editorOverlay: document.querySelector<HTMLElement>("#editor-overlay")!,
     editorAddToggle: document.querySelector<HTMLButtonElement>("#editor-add-toggle")!,
     editorMonsterAddToggle: document.querySelector<HTMLButtonElement>("#editor-monster-add-toggle")!,
+    editorWeaponAddToggle: document.querySelector<HTMLButtonElement>("#editor-weapon-add-toggle")!,
+    editorWeaponTypeSelect: document.querySelector<HTMLSelectElement>("#editor-weapon-type-select")!,
     editorMapName: document.querySelector<HTMLInputElement>("#editor-map-name")!,
     editorSaveBtn: document.querySelector<HTMLButtonElement>("#editor-save-btn")!,
     editorLoadSelect: document.querySelector<HTMLSelectElement>("#editor-load-select")!,
@@ -3442,7 +3591,7 @@ function renderShell(): UiRefs {
     editorObjFileInput: document.querySelector<HTMLInputElement>("#editor-obj-file-input")!
   };
 
-  if (!ui.layout || !ui.sidebar || !ui.stage || !ui.gameRoot || !ui.banner || !ui.waveWarning || !ui.waveNotice || !ui.cloudNotice || !ui.mannaNotice || !ui.roundState || !ui.roundDetail || !ui.roundAction || !ui.joinPanel || !ui.joinButton || !ui.nameInput || !ui.playerList || !ui.playerCount || !ui.statusText || !ui.roomBadge || !ui.connectionBadge || !ui.tuningPanel || !ui.tuningFields || !ui.tuningApply || !ui.tuningNotice || !ui.editorOverlay || !ui.editorAddToggle || !ui.editorMonsterAddToggle || !ui.editorMapName || !ui.editorSaveBtn || !ui.editorLoadSelect || !ui.editorLoadBtn || !ui.editorNotice || !ui.editorZoomFitBtn || !ui.editorWorldWidthInput || !ui.editorWorldHeightInput || !ui.editorWorldApplyBtn || !ui.preJoinEditorBtn || !ui.editorObjAddToggle || !ui.editorObjSelect || !ui.editorObjNewBtn || !ui.editorObjFileInput) {
+  if (!ui.layout || !ui.sidebar || !ui.stage || !ui.gameRoot || !ui.banner || !ui.waveWarning || !ui.waveNotice || !ui.cloudNotice || !ui.mannaNotice || !ui.roundState || !ui.roundDetail || !ui.roundAction || !ui.joinPanel || !ui.joinButton || !ui.nameInput || !ui.playerList || !ui.playerCount || !ui.statusText || !ui.roomBadge || !ui.connectionBadge || !ui.tuningPanel || !ui.tuningFields || !ui.tuningApply || !ui.tuningNotice || !ui.editorOverlay || !ui.editorAddToggle || !ui.editorMonsterAddToggle || !ui.editorMapName || !ui.editorSaveBtn || !ui.editorLoadSelect || !ui.editorLoadBtn || !ui.editorNotice || !ui.editorZoomFitBtn || !ui.editorWorldWidthInput || !ui.editorWorldHeightInput || !ui.editorWorldApplyBtn || !ui.preJoinEditorBtn || !ui.editorObjAddToggle || !ui.editorObjSelect || !ui.editorObjNewBtn || !ui.editorObjFileInput || !ui.editorWeaponAddToggle || !ui.editorWeaponTypeSelect) {
     throw new Error("UI bootstrap failed.");
   }
 

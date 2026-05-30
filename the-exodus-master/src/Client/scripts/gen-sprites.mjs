@@ -170,6 +170,91 @@ function monsterLegPx(x, y) {
   return [50, 140, 30, 255];                                     // lower darker
 }
 
+// weapon_staff.png  38×14  — same wrist-mount slot as gun; origin (0, 5/14)
+// A gnarled wooden shaft with a glowing blue orb at the tip.
+function weaponStaffPx(x, y) {
+  // orb at right (x 28-37)
+  const orbCx = 33, orbCy = 6.5;
+  const od = Math.sqrt((x - orbCx) ** 2 + (y - orbCy) ** 2);
+  if (x >= 28 && od <= 5.5) {
+    if (od <= 2.5) return [200, 230, 255, 255]; // bright core
+    if (od <= 4)   return [100, 160, 255, 240]; // blue glow
+    return [60, 100, 220, 160];                 // faint rim
+  }
+  // shaft: rows 5-8, cols 0-28
+  if (y >= 5 && y <= 8 && x <= 28) {
+    if (y === 5 || y === 8) return [80, 50, 20, 255];  // outline
+    if (x % 7 < 2)          return [100, 65, 25, 255]; // knot texture
+    return [140, 90, 40, 255];                          // wood
+  }
+  return [0, 0, 0, 0];
+}
+
+// weapon_bow.png  38×14  — bow pointing right, arc curving up/down
+function weaponBowPx(x, y) {
+  // bowstring: thin vertical line at x=33, y 1-12
+  if (x === 33 && y >= 1 && y <= 12) return [200, 190, 160, 255];
+  // limb: curved arc from (0,7) to (33,1) and (33,12) — quadratic-ish
+  const t = x / 33;
+  const midY = 7 - 6 * (t * (1 - t)) * 2; // curve upward in middle
+  if (x < 34 && Math.abs(y - midY) < 1.2) return [120, 80, 30, 255]; // upper limb
+  const midY2 = 7 + 6 * (t * (1 - t)) * 2; // curve downward
+  if (x < 34 && Math.abs(y - midY2) < 1.2) return [120, 80, 30, 255]; // lower limb
+  // grip wrap at x 15-18
+  if (x >= 15 && x <= 18 && y >= 4 && y <= 10) return [80, 50, 20, 255];
+  return [0, 0, 0, 0];
+}
+
+// weapon_sword.png  38×14  — blade pointing right, guard at x~10, grip on left
+function weaponSwordPx(x, y) {
+  // blade: y 5-8, x 10-37 (tapering tip)
+  if (x >= 10 && y >= 5 && y <= 8) {
+    const w = 37 - x; // taper near tip
+    const half = 1.5 + 1.5 * Math.min(1, (37 - x) / 20);
+    if (Math.abs(y - 6.5) > half) return [0, 0, 0, 0];
+    if (Math.abs(y - 6.5) > half - 0.8) return [150, 160, 180, 255]; // edge
+    return [200, 215, 235, 255]; // blade face
+  }
+  // guard: x 7-12, full height
+  if (x >= 7 && x <= 11 && y >= 2 && y <= 11) {
+    if (x === 7 || x === 11 || y === 2 || y === 11) return [80, 70, 20, 255];
+    return [180, 150, 40, 255]; // gold guard
+  }
+  // grip: y 5-8, x 0-7
+  if (x < 7 && y >= 5 && y <= 8) {
+    if (y === 5 || y === 8) return [60, 35, 15, 255];
+    return [100, 60, 25, 255]; // leather
+  }
+  return [0, 0, 0, 0];
+}
+
+// arrow.png  24×8  — horizontal, tip on right, fletching on left
+function arrowPx(x, y) {
+  // shaft: y 3-4, x 3-20
+  if (y >= 3 && y <= 4 && x >= 3 && x <= 20) return [160, 120, 60, 255];
+  // arrowhead: triangle on right
+  const tipX = 23, tipY = 3.5;
+  if (x >= 17 && Math.abs(y - tipY) <= (23 - x) * 0.5) return [180, 190, 210, 255];
+  // fletching: left end, two angled fins
+  if (x <= 4) {
+    if ((y <= 2 && x >= 1) || (y >= 5 && x >= 1)) return [180, 60, 60, 255]; // red feather
+  }
+  return [0, 0, 0, 0];
+}
+
+// sword_swing.png  60×60  — white arc flash in top-right quadrant
+function swordSwingPx(x, y) {
+  const cx = 0, cy = 60; // arc center at bottom-left
+  const r = Math.sqrt(x * x + (y - 60) ** 2);
+  if (r < 15 || r > 55) return [0, 0, 0, 0];
+  // only the top-right quadrant
+  if (x < 0 || y > 60) return [0, 0, 0, 0];
+  const t = (r - 15) / 40; // 0=inner, 1=outer
+  const alpha = Math.round(220 * (1 - Math.abs(t - 0.5) * 2));
+  if (alpha <= 0) return [0, 0, 0, 0];
+  return [255, 240, 160, alpha];
+}
+
 // ── Write files ───────────────────────────────────────────────────────────────
 
 // scale2x: doubles canvas size of any pixel function without changing shapes
@@ -189,5 +274,11 @@ writeSprite('public/sprites/monster_leg.png',  makePNG(20,  60,  scale2x(monster
 writeSprite('public/sprites/fireball.png', makePNG(36, 36, fireballPx));
 writeSprite('public/sprites/life_dot.png', makePNG(10, 10, lifeDotPx));
 writeSprite('public/sprites/platform.png', makePNG(64, 26, platformPx));
+// Weapon sprites — same wrist-mount convention as gun (origin 0, 5/14 when held)
+writeSprite('public/sprites/weapon_staff.png',  makePNG(76, 28, scale2x(weaponStaffPx)));
+writeSprite('public/sprites/weapon_bow.png',    makePNG(76, 28, scale2x(weaponBowPx)));
+writeSprite('public/sprites/weapon_sword.png',  makePNG(76, 28, scale2x(weaponSwordPx)));
+writeSprite('public/sprites/arrow.png',         makePNG(24,  8, arrowPx));
+writeSprite('public/sprites/sword_swing.png',   makePNG(60, 60, swordSwingPx));
 
 console.log('Done. Run with --force to regenerate all sprites regardless of existing files.');

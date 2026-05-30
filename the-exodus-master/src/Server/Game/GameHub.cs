@@ -30,9 +30,16 @@ public sealed class GameHub(GameWorld world) : Hub
         return Task.CompletedTask;
     }
 
+    // Both names accepted — ShootFireball kept for any older client builds.
     public Task ShootFireball()
     {
-        _world.TryShootFireball(Context.ConnectionId);
+        _world.TryAttack(Context.ConnectionId);
+        return Task.CompletedTask;
+    }
+
+    public Task Attack()
+    {
+        _world.TryAttack(Context.ConnectionId);
         return Task.CompletedTask;
     }
 
@@ -63,11 +70,7 @@ public sealed class GameHub(GameWorld world) : Hub
     public async Task Emote(EmoteRequest request)
     {
         var result = _world.TryEmote(Context.ConnectionId, request.Code);
-        if (!result.Success)
-        {
-            return;
-        }
-
+        if (!result.Success) return;
         await Clients.All.SendAsync("PlayerEmoted", new PlayerEmoted(result.PlayerId!, result.Code!));
     }
 
@@ -83,6 +86,8 @@ public sealed class GameHub(GameWorld world) : Hub
         await Clients.Caller.SendAsync("MonsterSpawnsUpdated", new MonsterSpawnsUpdatedPayload(spawns));
         var scenery = _world.GetSceneryObjects();
         await Clients.Caller.SendAsync("SceneryObjectsUpdated", new SceneryObjectsUpdatedPayload(scenery));
+        var weaponSpawns = _world.GetWeaponSpawns();
+        await Clients.Caller.SendAsync("WeaponSpawnsUpdated", new WeaponSpawnsUpdatedPayload(weaponSpawns));
     }
 
     public async Task ApplyScenery(ApplySceneryRequest request)
@@ -123,7 +128,7 @@ public sealed class GameHub(GameWorld world) : Hub
 
     public async Task SaveMap(SaveMapRequest request)
     {
-        var result = _world.TrySaveMap(Context.ConnectionId, request.Name, request.Platforms, request.SceneryObjects);
+        var result = _world.TrySaveMap(Context.ConnectionId, request.Name, request.Platforms, request.SceneryObjects, request.WeaponSpawns);
         if (!result.Success)
         {
             await Clients.Caller.SendAsync("MapActionRejected", new MapActionRejected("save", result.Reason ?? "unknown"));
@@ -134,6 +139,8 @@ public sealed class GameHub(GameWorld world) : Hub
         await Clients.All.SendAsync("PlatformsUpdated", new PlatformsUpdatedPayload(platforms));
         var scenery = _world.GetSceneryObjects();
         await Clients.All.SendAsync("SceneryObjectsUpdated", new SceneryObjectsUpdatedPayload(scenery));
+        var weaponSpawns = _world.GetWeaponSpawns();
+        await Clients.All.SendAsync("WeaponSpawnsUpdated", new WeaponSpawnsUpdatedPayload(weaponSpawns));
         var maps = _world.ListMaps();
         await Clients.Caller.SendAsync("MapList", new MapListPayload(maps));
     }
@@ -144,6 +151,14 @@ public sealed class GameHub(GameWorld world) : Hub
         if (!result.Success) return;
         var spawns = _world.GetMonsterSpawns();
         await Clients.All.SendAsync("MonsterSpawnsUpdated", new MonsterSpawnsUpdatedPayload(spawns));
+    }
+
+    public async Task ApplyWeaponSpawns(ApplyWeaponSpawnsRequest request)
+    {
+        var result = _world.TryApplyWeaponSpawns(Context.ConnectionId, request.Spawns);
+        if (!result.Success) return;
+        var spawns = _world.GetWeaponSpawns();
+        await Clients.All.SendAsync("WeaponSpawnsUpdated", new WeaponSpawnsUpdatedPayload(spawns));
     }
 
     public async Task LoadMap(LoadMapRequest request)
@@ -159,6 +174,8 @@ public sealed class GameHub(GameWorld world) : Hub
         await Clients.All.SendAsync("PlatformsUpdated", new PlatformsUpdatedPayload(platforms));
         var scenery = _world.GetSceneryObjects();
         await Clients.All.SendAsync("SceneryObjectsUpdated", new SceneryObjectsUpdatedPayload(scenery));
+        var weaponSpawns = _world.GetWeaponSpawns();
+        await Clients.All.SendAsync("WeaponSpawnsUpdated", new WeaponSpawnsUpdatedPayload(weaponSpawns));
     }
 
     public override Task OnDisconnectedAsync(Exception? exception)

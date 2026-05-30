@@ -38,6 +38,7 @@ export type PlayerSnapshot = {
   facingDir?: number;
   lives?: number;
   isInvincible?: boolean;
+  weapon?: string;
 };
 
 export type WaveSide = "left" | "right" | "top" | "bottom";
@@ -132,12 +133,18 @@ export type GameEventSnapshot = {
   secondsUntilStateChange?: number | null;
 };
 
-export type FireballSnapshot = {
+// All attack types share one snapshot. vX/vY carry the velocity vector.
+// w/h are non-zero only for area-effect types (sword_swing).
+export type ProjectileSnapshot = {
   id: string;
   ownerId: string;
+  type: string;
   x: number;
   y: number;
-  dirX: number;
+  vX: number;
+  vY: number;
+  w?: number;
+  h?: number;
 };
 
 export type MonsterSnapshot = {
@@ -170,6 +177,23 @@ export type SceneryLibraryEntry = {
   solid: boolean;
 };
 
+export type WeaponType = "staff" | "bow" | "sword";
+
+export type WeaponSpawnDto = {
+  id: string;
+  type: string;
+  x: number;
+  y: number;
+};
+
+export type WeaponSpawnSnapshot = {
+  id: string;
+  type: string;
+  x: number;
+  y: number;
+  available: boolean;
+};
+
 export type WorldSnapshot = {
   tick: number;
   serverTimeMs: number;
@@ -180,8 +204,9 @@ export type WorldSnapshot = {
   events: GameEventSnapshot[];
   winnerPlayerId: string | null;
   gameOver: boolean;
-  fireballs?: FireballSnapshot[];
   monsters?: MonsterSnapshot[];
+  projectiles?: ProjectileSnapshot[];
+  weaponSpawns?: WeaponSpawnSnapshot[];
 };
 
 export type JoinRejectedSnapshot = {
@@ -224,6 +249,7 @@ export type PlayerView = {
   facingDir: number;
   lives: number;
   isInvincible: boolean;
+  weapon: string;
 };
 
 export type WaveView = WaveSnapshot;
@@ -318,7 +344,8 @@ export function derivePlayerView(player: PlayerSnapshot, winnerPlayerId: string 
     statusLabel,
     facingDir: player.facingDir ?? 1,
     lives: player.lives ?? 3,
-    isInvincible: player.isInvincible ?? false
+    isInvincible: player.isInvincible ?? false,
+    weapon: player.weapon ?? "staff"
   };
 }
 

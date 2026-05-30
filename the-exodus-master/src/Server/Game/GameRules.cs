@@ -126,4 +126,35 @@ public sealed record GameRules
 
     [Tunable("Required Per Player", "Manna", 1f, 5f, 1f)]
     public int RequiredMannaPerPlayer { get; init; } = 1;
+
+    // ── Weapons ───────────────────────────────────────────────────────────────
+    [Tunable("Attack Cooldown (s)", "Weapons", 0.1f, 2f, 0.05f)]
+    public float AttackCooldownSeconds { get; init; } = 0.35f;
+
+    [Tunable("Arrow Speed (px/s)", "Weapons", 200f, 1200f, 50f)]
+    public float ArrowSpeed { get; init; } = 650f;
+
+    [Tunable("Arrow Gravity (px/s²)", "Weapons", 0f, 1200f, 50f)]
+    public float ArrowGravity { get; init; } = 480f;
+
+    [Tunable("Arrow Max Distance (px)", "Weapons", 100f, 1200f, 50f)]
+    public float ArrowMaxDistance { get; init; } = 480f;
+
+    [Tunable("Arrow Spread (°)", "Weapons", 5f, 45f, 5f)]
+    public float ArrowSpreadDegrees { get; init; } = 15f;
+
+    [Tunable("Arrow Hit Radius (px)", "Weapons", 5f, 60f, 1f)]
+    public float ArrowHitRadius { get; init; } = 14f;
+
+    [Tunable("Sword Reach (px)", "Weapons", 30f, 200f, 10f)]
+    public float SwordReach { get; init; } = 90f;
+
+    [Tunable("Sword Height (px)", "Weapons", 20f, 120f, 10f)]
+    public float SwordHeight { get; init; } = 60f;
+
+    [Tunable("Sword Swing Duration (s)", "Weapons", 0.1f, 0.8f, 0.05f)]
+    public float SwordSwingDuration { get; init; } = 0.28f;
+
+    [Tunable("Weapon Pickup Radius (px)", "Weapons", 20f, 120f, 5f)]
+    public float WeaponPickupRadius { get; init; } = 45f;
 }

@@ -80,8 +80,11 @@ public sealed class GameWorld
     private long _nextMannaCycleId = 1;
     private string? _winnerPlayerId;
     private bool _winnerCheckEnabled;
-    private readonly List<FireballState> _fireballs = [];
-    private long _nextFireballId;
+    private readonly List<ProjectileState> _projectiles = [];
+    private long _nextProjectileId;
+
+    private readonly List<WeaponSpawnState> _weaponSpawns = [];
+    private float _worldTime;
 
     private readonly List<MonsterSpawn> _monsterSpawns = [];
     private readonly List<MonsterState> _monsters = [];
@@ -220,18 +223,59 @@ public sealed class GameWorld
         }
     }
 
-    public void TryShootFireball(string connectionId)
+    public void TryShootFireball(string connectionId) => TryAttack(connectionId);
+
+    public void TryAttack(string connectionId)
     {
         lock (_sync)
         {
             if (!_playersByConnection.TryGetValue(connectionId, out var player) || !player.IsAlive) return;
-            _fireballs.Add(new FireballState(
-                $"fb-{_nextFireballId++}",
-                player.Id,
-                player.X + 24f * player.FacingDir,
-                player.Y - PlayerHalfHeight - 9f,
-                player.FacingDir));
+            if (_phase == RoundPhase.GameOver) return;
+            if (_worldTime - player.LastAttackAt < _rules.AttackCooldownSeconds) return;
+            player.LastAttackAt = _worldTime;
+
+            var ox = player.X + 24f * player.FacingDir;
+            var oy = player.Y - PlayerHalfHeight - 9f;
+
+            switch (player.Weapon)
+            {
+                case "bow":
+                {
+                    var spread = _rules.ArrowSpreadDegrees * MathF.PI / 180f;
+                    for (var i = -1; i <= 1; i++)
+                    {
+                        var a = i * spread;
+                        LaunchProjectile(player.Id, "arrow", ox, oy,
+                            MathF.Cos(a) * _rules.ArrowSpeed * player.FacingDir,
+                            -MathF.Sin(a) * _rules.ArrowSpeed);
+                    }
+                    break;
+                }
+                case "sword":
+                {
+                    // Center of hitbox: horizontally offset by half reach, vertically centered on body
+                    var cx = player.X + _rules.SwordReach * 0.5f * player.FacingDir;
+                    var cy = player.Y - _rules.SwordHeight * 0.5f;
+                    LaunchProjectile(player.Id, "sword_swing", cx, cy, 0f, 0f,
+                        _rules.SwordSwingDuration, _rules.SwordReach, _rules.SwordHeight);
+                    break;
+                }
+                default: // staff
+                    LaunchProjectile(player.Id, "fireball", ox, oy, _rules.FireballSpeed * player.FacingDir, 0f);
+                    break;
+            }
         }
+    }
+
+    // Single entry point for spawning any projectile type.
+    // lifetime > 0 sets a wall-clock expiry (used by area effects like sword swings).
+    // w/h > 0 are included in the snapshot so the client can size area-effect visuals.
+    private void LaunchProjectile(string ownerId, string type, float x, float y,
+        float vx, float vy, float lifetime = 0f, float w = 0f, float h = 0f)
+    {
+        _projectiles.Add(new ProjectileState(
+            $"p-{_nextProjectileId++}", ownerId, type, x, y, vx, vy,
+            lifetime > 0f ? _worldTime + lifetime : 0f, w, h));
     }
 
     public (bool Success, string? StarterId, string? Reason) TryStartRound(string connectionId)
@@ -309,10 +353,11 @@ public sealed class GameWorld
         {
             var events = new List<GameEventSnapshot>();
             _tick += 1;
+            _worldTime += deltaSeconds;
 
             MovePlayers(deltaSeconds);
             TickInvincibility(deltaSeconds);
-            TickFireballs(deltaSeconds, events);
+            TickProjectiles(deltaSeconds, events);
 
             if (_phase == RoundPhase.Active)
             {
@@ -364,7 +409,12 @@ public sealed class GameWorld
             player.VelocityY = 0f;
             player.IsGrounded = false;
             player.JumpRequested = false;
+            player.Weapon = "staff";
+            player.LastAttackAt = float.NegativeInfinity;
         }
+
+        foreach (var spawn in _weaponSpawns) spawn.Available = true;
+        _projectiles.Clear();
 
         SpawnMonstersFromSpawns();
     }
@@ -483,6 +533,101 @@ public sealed class GameWorld
             {
                 MovePlayerTarget(player, deltaSeconds);
             }
+
+            if (_phase == RoundPhase.Active)
+                CheckWeaponPickups(player);
+        }
+    }
+
+    private void TickProjectiles(float dt, ICollection<GameEventSnapshot> events)
+    {
+        for (var i = _projectiles.Count - 1; i >= 0; i--)
+        {
+            var p = _projectiles[i];
+            if (!p.Alive) { _projectiles.RemoveAt(i); continue; }
+
+            var def = GetProjectileDefinition(p.Type);
+            if (def is null) { _projectiles.RemoveAt(i); continue; }
+
+            // Physics
+            if (def.HasGravity) p.VY += def.Gravity * dt;
+            p.X += p.VX * dt;
+            p.Y += p.VY * dt;
+
+            // Expiry: lifetime and distance bounds
+            if (p.ExpiresAt > 0f && _worldTime >= p.ExpiresAt)                               { _projectiles.RemoveAt(i); continue; }
+            if (def.MaxDistance > 0f && MathF.Abs(p.X - p.StartX) > def.MaxDistance)        { _projectiles.RemoveAt(i); continue; }
+            if (p.Y > EffectiveGroundY + 20f || p.X < -30f || p.X > WorldWidth + 30f)       { _projectiles.RemoveAt(i); continue; }
+
+            // Collision — circular (point) or AABB (area)
+            bool destroyed = false;
+            foreach (var target in _playersByConnection.Values)
+            {
+                if (target.Id == p.OwnerId || !target.IsAlive || target.InvincibilityRemaining > 0f) continue;
+                var hit = def.HitRadius > 0f
+                    ? IsWithinRadius(p.X, p.Y, target.X, target.Y - PlayerHalfHeight, def.HitRadius)
+                    : AabbOverlap(p.X - p.W * 0.5f, p.Y - p.H * 0.5f, p.W, p.H,
+                                  target.X - PlayerBodyHalfWidth, target.Y - PlayerBodyHeight,
+                                  PlayerBodyHalfWidth * 2f, PlayerBodyHeight);
+                if (!hit) continue;
+                Kill(target, def.DeathReason, events);
+                if (!def.PersistsAfterHit) { destroyed = true; break; }
+            }
+            if (destroyed) { _projectiles.RemoveAt(i); continue; }
+
+            foreach (var monster in _monsters)
+            {
+                if (monster.Hp <= 0 || monster.InvincibilityRemaining > 0f) continue;
+                var hit = def.HitRadius > 0f
+                    ? IsWithinRadius(p.X, p.Y, monster.X, monster.Y, def.HitRadius)
+                    : AabbOverlap(p.X - p.W * 0.5f, p.Y - p.H * 0.5f, p.W, p.H,
+                                  monster.X - MonsterHalfWidth, monster.Y - MonsterHalfHeight * 2f,
+                                  MonsterHalfWidth * 2f, MonsterHalfHeight * 2f);
+                if (!hit) continue;
+                DamageMonster(monster, events);
+                if (!def.PersistsAfterHit) { destroyed = true; break; }
+            }
+            if (destroyed) _projectiles.RemoveAt(i);
+        }
+    }
+
+    private static bool AabbOverlap(float ax, float ay, float aw, float ah,
+                                     float bx, float by, float bw, float bh)
+        => ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+
+    private void CheckWeaponPickups(PlayerState player)
+    {
+        foreach (var spawn in _weaponSpawns)
+        {
+            if (!spawn.Available) continue;
+            var dx = player.X - spawn.X;
+            var dy = player.Y - spawn.Y;
+            if (dx * dx + dy * dy <= _rules.WeaponPickupRadius * _rules.WeaponPickupRadius)
+            {
+                player.Weapon = spawn.Type;
+                spawn.Available = false;
+                break;
+            }
+        }
+    }
+
+    public (bool Success, string? Reason) TryApplyWeaponSpawns(string connectionId, List<WeaponSpawnDto> spawns)
+    {
+        lock (_sync)
+        {
+            if (!CanEdit(connectionId)) return (false, "not_authorized");
+            _weaponSpawns.Clear();
+            foreach (var s in spawns)
+                _weaponSpawns.Add(new WeaponSpawnState(s.Id, s.Type, s.X, s.Y));
+            return (true, null);
+        }
+    }
+
+    public WeaponSpawnDto[] GetWeaponSpawns()
+    {
+        lock (_sync)
+        {
+            return _weaponSpawns.Select(s => new WeaponSpawnDto(s.Id, s.Type, s.X, s.Y)).ToArray();
         }
     }
 
@@ -495,45 +640,6 @@ public sealed class GameWorld
         }
     }
 
-    private void TickFireballs(float deltaSeconds, ICollection<GameEventSnapshot> events)
-    {
-        var speed = _rules.FireballSpeed;
-        var hitRadius = _rules.FireballHitRadius;
-        for (var i = _fireballs.Count - 1; i >= 0; i--)
-        {
-            var fb = _fireballs[i];
-            fb.X += fb.DirX * speed * deltaSeconds;
-            if (fb.X < -30f || fb.X > WorldWidth + 30f)
-            {
-                _fireballs.RemoveAt(i);
-                continue;
-            }
-
-            var hit = _playersByConnection.Values.FirstOrDefault(p =>
-                p.IsAlive &&
-                p.InvincibilityRemaining <= 0f &&
-                p.Id != fb.OwnerId &&
-                IsWithinRadius(fb.X, fb.Y, p.X, p.Y - PlayerHalfHeight, hitRadius));
-
-            if (hit is not null)
-            {
-                Kill(hit, "fireball", events);
-                _fireballs.RemoveAt(i);
-                continue;
-            }
-
-            var monsterHit = _monsters.FirstOrDefault(m =>
-                m.Hp > 0 &&
-                m.InvincibilityRemaining <= 0f &&
-                IsWithinRadius(fb.X, fb.Y, m.X, m.Y, hitRadius));
-
-            if (monsterHit is not null)
-            {
-                DamageMonster(monsterHit, events);
-                _fireballs.RemoveAt(i);
-            }
-        }
-    }
 
     private void MovePlayerPhysics(PlayerState player, float deltaSeconds)
     {
@@ -966,7 +1072,8 @@ public sealed class GameWorld
                 player.DeathReason,
                 player.FacingDir,
                 player.Lives,
-                player.InvincibilityRemaining > 0f))
+                player.InvincibilityRemaining > 0f,
+                player.Weapon))
             .ToArray();
 
         var hideQueuedHazardsForManna = _mannaCycle is not null || _nextHazard == HazardType.Manna;
@@ -1029,10 +1136,11 @@ public sealed class GameWorld
             events,
             _winnerPlayerId,
             _winnerPlayerId is not null,
-            _fireballs.Select(fb => new FireballSnapshot(fb.Id, fb.OwnerId, fb.X, fb.Y, fb.DirX)).ToArray(),
             _monsters.Select(m => new MonsterSnapshot(m.Id, m.X, m.Y, m.FacingDir, m.Hp, m.IsPaused)).ToArray(),
             WorldWidth,
-            WorldHeight);
+            WorldHeight,
+            _projectiles.Where(p => p.Alive).Select(p => new ProjectileSnapshot(p.Id, p.OwnerId, p.Type, p.X, p.Y, p.VX, p.VY, p.W, p.H)).ToArray(),
+            _weaponSpawns.Select(s => new WeaponSpawnSnapshot(s.Id, s.Type, s.X, s.Y, s.Available)).ToArray());
     }
 
     private MannaSnapshot BuildMannaSnapshot()
@@ -1096,6 +1204,9 @@ public sealed class GameWorld
         _monsters.Clear();
         ResetRoundMechanics();
 
+        foreach (var spawn in _weaponSpawns) spawn.Available = true;
+        _projectiles.Clear();
+
         foreach (var player in _playersByConnection.Values)
         {
             var spawn = RandomSpawn();
@@ -1115,6 +1226,8 @@ public sealed class GameWorld
             player.IsGrounded = false;
             player.InputDirX = 0;
             player.JumpRequested = false;
+            player.Weapon = "staff";
+            player.LastAttackAt = float.NegativeInfinity;
         }
     }
 
@@ -1651,9 +1764,10 @@ public sealed class GameWorld
     {
         public List<PlatformDto>? Platforms { get; set; }
         public List<SceneryObjectDto>? Scenery { get; set; }
+        public List<WeaponSpawnDto>? WeaponSpawns { get; set; }
     }
 
-    public (bool Success, string? Reason) TrySaveMap(string connectionId, string name, List<PlatformDto> platforms, List<SceneryObjectDto> scenery)
+    public (bool Success, string? Reason) TrySaveMap(string connectionId, string name, List<PlatformDto> platforms, List<SceneryObjectDto> scenery, List<WeaponSpawnDto>? weaponSpawns = null)
     {
         if (!IsValidMapName(name))
             return (false, "invalid_name");
@@ -1672,7 +1786,7 @@ public sealed class GameWorld
         try
         {
             Directory.CreateDirectory(_mapsDirectory);
-            var mapFile = new MapFileDto { Platforms = platforms, Scenery = scenery };
+            var mapFile = new MapFileDto { Platforms = platforms, Scenery = scenery, WeaponSpawns = weaponSpawns };
             var json = JsonSerializer.Serialize(mapFile, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(Path.Combine(_mapsDirectory, $"{name}.json"), json);
         }
@@ -1722,6 +1836,10 @@ public sealed class GameWorld
         {
             _platforms = mapFile.Platforms.Select(p => (p.Cx, p.SurfaceY, p.Width)).ToArray();
             _sceneryObjects = mapFile.Scenery?.ToArray() ?? [];
+            _weaponSpawns.Clear();
+            if (mapFile.WeaponSpawns != null)
+                foreach (var s in mapFile.WeaponSpawns)
+                    _weaponSpawns.Add(new WeaponSpawnState(s.Id, s.Type, s.X, s.Y));
         }
 
         return (true, null);
@@ -1795,6 +1913,8 @@ public sealed class GameWorld
         public int FacingDir { get; set; } = 1;
         public bool JumpRequested { get; set; }
         public bool UsePhysics { get; set; }
+        public string Weapon { get; set; } = "staff";
+        public float LastAttackAt { get; set; } = float.NegativeInfinity;
     }
 
     private sealed class MonsterSpawn(string id, float x, float y)
@@ -1819,13 +1939,55 @@ public sealed class GameWorld
         public float InvincibilityRemaining { get; set; }
     }
 
-    private sealed class FireballState(string id, string ownerId, float x, float y, int dirX)
+    // ── Projectile system ─────────────────────────────────────────────────────
+    // All attack types (fireball, arrow, sword_swing) share one state class and
+    // one tick method. Adding a new weapon = add one entry to GetProjectileDefinition.
+
+    private sealed class ProjectileState(
+        string id, string ownerId, string type,
+        float x, float y, float vx, float vy,
+        float expiresAt, float w, float h)
     {
         public string Id { get; } = id;
         public string OwnerId { get; } = ownerId;
+        public string Type { get; } = type;
         public float X { get; set; } = x;
+        public float Y { get; set; } = y;
+        public float VX { get; set; } = vx;
+        public float VY { get; set; } = vy;
+        public float StartX { get; } = x;
+        public float ExpiresAt { get; } = expiresAt;  // 0 = no time-based expiry
+        public float W { get; } = w;  // AABB width  (0 for point projectiles)
+        public float H { get; } = h;  // AABB height (0 for point projectiles)
+        public bool Alive { get; set; } = true;
+    }
+
+    // Describes physics and collision for one projectile type.
+    private sealed record ProjectileDefinition(
+        bool HasGravity,
+        float Gravity,
+        float MaxDistance,      // 0 = no distance limit
+        float HitRadius,        // > 0 → circular hit; 0 → AABB using P.W × P.H
+        string DeathReason,
+        bool PersistsAfterHit); // true for area effects (sword_swing stays active)
+
+    // Returns the behaviour definition for a given type from current rules.
+    // To add a new weapon: add one case here.
+    private ProjectileDefinition? GetProjectileDefinition(string type) => type switch
+    {
+        "fireball"    => new(false, 0f,                    0f,                         _rules.FireballHitRadius, "fireball",    false),
+        "arrow"       => new(true,  _rules.ArrowGravity,   _rules.ArrowMaxDistance,    _rules.ArrowHitRadius,    "arrow",       false),
+        "sword_swing" => new(false, 0f,                    0f,                         0f,                       "sword",       true),
+        _ => null
+    };
+
+    private sealed class WeaponSpawnState(string id, string type, float x, float y)
+    {
+        public string Id { get; } = id;
+        public string Type { get; } = type;
+        public float X { get; } = x;
         public float Y { get; } = y;
-        public int DirX { get; } = dirX;
+        public bool Available { get; set; } = true;
     }
 
     private sealed class MannaCycleState(long cycleId, List<MannaPickupState> pickups)

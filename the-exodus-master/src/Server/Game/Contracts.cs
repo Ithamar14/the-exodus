@@ -106,7 +106,20 @@ public sealed record GameEventSnapshot(
     bool? IsActive = null,
     float? SecondsUntilStateChange = null);
 
-public sealed record FireballSnapshot(string Id, string OwnerId, float X, float Y, int DirX);
+// ── Projectiles (all attack types in one record) ──────────────────────────────
+// VX/VY carry the full velocity vector. W/H are non-zero only for area-effect
+// types (sword_swing) so the client can size the visual correctly.
+public sealed record ProjectileSnapshot(
+    string Id, string OwnerId, string Type,
+    float X, float Y, float VX, float VY,
+    float W = 0f, float H = 0f);
+
+// ── Weapons ───────────────────────────────────────────────────────────────────
+public sealed record WeaponSpawnDto(string Id, string Type, float X, float Y);
+public sealed record WeaponSpawnsUpdatedPayload(IReadOnlyList<WeaponSpawnDto> Spawns);
+public sealed class ApplyWeaponSpawnsRequest { public List<WeaponSpawnDto> Spawns { get; set; } = new(); }
+
+public sealed record WeaponSpawnSnapshot(string Id, string Type, float X, float Y, bool Available);
 
 public sealed record TunableFieldDto(
     string Key,
@@ -154,6 +167,7 @@ public sealed class SaveMapRequest
     public string Name { get; set; } = string.Empty;
     public List<PlatformDto> Platforms { get; set; } = new();
     public List<SceneryObjectDto> SceneryObjects { get; set; } = new();
+    public List<WeaponSpawnDto> WeaponSpawns { get; set; } = new();
 }
 
 public sealed class ApplyPlatformsRequest
@@ -181,7 +195,8 @@ public sealed record PlayerSnapshot(
     string? DeathReason,
     int FacingDir = 1,
     int Lives = 3,
-    bool IsInvincible = false);
+    bool IsInvincible = false,
+    string Weapon = "staff");
 
 public sealed record MonsterSnapshot(string Id, float X, float Y, int FacingDir, int Hp, bool IsPaused);
 
@@ -203,7 +218,8 @@ public sealed record WorldSnapshot(
     IReadOnlyList<GameEventSnapshot> Events,
     string? WinnerPlayerId,
     bool GameOver,
-    IReadOnlyList<FireballSnapshot> Fireballs,
     IReadOnlyList<MonsterSnapshot> Monsters,
     float WorldWidth,
-    float WorldHeight);
+    float WorldHeight,
+    IReadOnlyList<ProjectileSnapshot>? Projectiles = null,
+    IReadOnlyList<WeaponSpawnSnapshot>? WeaponSpawns = null);
