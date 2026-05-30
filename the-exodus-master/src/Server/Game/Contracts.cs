@@ -131,10 +131,29 @@ public sealed record PlatformsUpdatedPayload(IReadOnlyList<PlatformDto> Platform
 public sealed record MapListPayload(IReadOnlyList<string> Names);
 public sealed record MapActionRejected(string Action, string Reason);
 
+public sealed record SceneryObjectDto(
+    string Id,
+    string SpriteKey,
+    float X,
+    float Y,
+    float Width,
+    float Height,
+    bool Solid);
+
+public sealed record SceneryLibraryEntryDto(string Key, bool Solid);
+public sealed record SceneryLibraryPayload(IReadOnlyList<SceneryLibraryEntryDto> Entries);
+public sealed record SceneryObjectsUpdatedPayload(IReadOnlyList<SceneryObjectDto> Objects);
+
+public sealed class ApplySceneryRequest
+{
+    public List<SceneryObjectDto> Objects { get; set; } = new();
+}
+
 public sealed class SaveMapRequest
 {
     public string Name { get; set; } = string.Empty;
     public List<PlatformDto> Platforms { get; set; } = new();
+    public List<SceneryObjectDto> SceneryObjects { get; set; } = new();
 }
 
 public sealed class ApplyPlatformsRequest
@@ -185,4 +204,6 @@ public sealed record WorldSnapshot(
     string? WinnerPlayerId,
     bool GameOver,
     IReadOnlyList<FireballSnapshot> Fireballs,
-    IReadOnlyList<MonsterSnapshot> Monsters);
+    IReadOnlyList<MonsterSnapshot> Monsters,
+    float WorldWidth,
+    float WorldHeight);

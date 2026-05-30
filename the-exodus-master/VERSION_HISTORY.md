@@ -1,5 +1,31 @@
 # Version History
 
+## v2.0.0 — Scenery object library
+**Status:** Main build
+
+### What Was Built
+- **Scenery object library** — server-side sprite library stored in `wwwroot/sprites/objects/`; solid flag per sprite type written to `_meta.json` at upload time and inherited by all placed instances
+- **Solid AABB collision** — scenery objects tagged solid block players and monsters on all four sides (wall, floor, ceiling); minimum-penetration-axis push with velocity zeroing on contact axis; landing on top sets `IsGrounded = true`
+- **Level editor: Place Object mode** — "＋ Place Object" toggle button; sprite dropdown populated from the server library; "+ New" button opens file picker, prompts for a name and solid/transparent choice, uploads PNG to the server
+- **Corner-drag resize** — selected scenery object shows four yellow corner handles; dragging any corner scales the object with aspect ratio locked (opposite corner is the fixed anchor)
+- **Map format versioned** — saved maps are now `{ platforms: [...], scenery: [...] }` JSON objects; backward-compatible loader falls back to legacy bare-array format
+- **WASD camera pan** — level editor camera scrolls with W/A/S/D keys, zoom-adjusted and frame-rate independent; replaces broken mouse-pan that only worked vertically
+- **Editor panel layout** — overlay widened to 260 px with `max-height` + `overflow-y: auto` so the full panel is always reachable
+
+### Bug Fixes
+- `keyboard.isDown` crash — Phaser's `KeyboardPlugin` has no `isDown` method; replaced with proper `Key` objects created once in `create()` and checked via `.isDown` in `update()`
+- Scenery upload 404 in dev — added `/api` and `/sprites` proxy routes to `vite.config.ts`
+- Solid flag always false on first placement — was looked up from other placed objects of the same sprite (empty on first use); now carried from the library entry directly
+- Stale `editorSceneryRef` after server round-trip — caused wrong deletion order and blue outlines persisting; `syncScenery` now updates the ref pointer so hit-test indices always match the live array
+
+### Protocol additions
+- `SceneryObjectDto` (id, spriteKey, x, y, width, height, solid)
+- `SceneryObjectsUpdated` hub message
+- `ApplyScenery` hub method
+- `GetRules` also returns current scenery objects on join
+- `SaveMap` / `LoadMap` include scenery in the versioned map file
+- REST: `POST /api/scenery/upload`, `GET /api/scenery/list`
+
 ## v1.0.0 — Enemy monsters
 **Status:** Main build
 

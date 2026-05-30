@@ -27,9 +27,14 @@ import {
   type FireballSnapshot,
   type MonsterSnapshot,
   type MonsterSpawnDto,
+  type SceneryObjectDto,
+  type SceneryLibraryEntry,
   GROUND_Y,
   WORLD_HEIGHT,
-  WORLD_WIDTH
+  WORLD_WIDTH,
+  VIEWPORT_WIDTH,
+  VIEWPORT_HEIGHT,
+  updateWorldSize
 } from "./model";
 import "./style.css";
 
@@ -77,6 +82,15 @@ type UiRefs = {
   editorLoadSelect: HTMLSelectElement;
   editorLoadBtn: HTMLButtonElement;
   editorNotice: HTMLDivElement;
+  editorZoomFitBtn: HTMLButtonElement;
+  editorWorldWidthInput: HTMLInputElement;
+  editorWorldHeightInput: HTMLInputElement;
+  editorWorldApplyBtn: HTMLButtonElement;
+  preJoinEditorBtn: HTMLButtonElement;
+  editorObjAddToggle: HTMLButtonElement;
+  editorObjSelect: HTMLSelectElement;
+  editorObjNewBtn: HTMLButtonElement;
+  editorObjFileInput: HTMLInputElement;
 };
 
 type SceneHooks = {
@@ -111,14 +125,17 @@ type SceneDebugState = {
 
 type PlatformDto = { cx: number; surfaceY: number; width: number };
 
-const DEFAULT_PLATFORMS: PlatformDto[] = [
-  { cx: 150, surfaceY: 597, width: 200 },
-  { cx: 512, surfaceY: 587, width: 180 },
-  { cx: 850, surfaceY: 597, width: 200 },
-  { cx: 280, surfaceY: 447, width: 140 },
-  { cx: 730, surfaceY: 457, width: 140 },
-  { cx: 512, surfaceY: 337, width: 120 },
-];
+// Proportional fractions of the original 1024×768 layout — scaled at runtime to WORLD_WIDTH/HEIGHT.
+function makeDefaultPlatforms(): PlatformDto[] {
+  return [
+    { cx: Math.round(WORLD_WIDTH * 0.146), surfaceY: Math.round(WORLD_HEIGHT * 0.778), width: Math.round(WORLD_WIDTH * 0.195) },
+    { cx: Math.round(WORLD_WIDTH * 0.500), surfaceY: Math.round(WORLD_HEIGHT * 0.765), width: Math.round(WORLD_WIDTH * 0.176) },
+    { cx: Math.round(WORLD_WIDTH * 0.830), surfaceY: Math.round(WORLD_HEIGHT * 0.778), width: Math.round(WORLD_WIDTH * 0.195) },
+    { cx: Math.round(WORLD_WIDTH * 0.273), surfaceY: Math.round(WORLD_HEIGHT * 0.583), width: Math.round(WORLD_WIDTH * 0.137) },
+    { cx: Math.round(WORLD_WIDTH * 0.713), surfaceY: Math.round(WORLD_HEIGHT * 0.596), width: Math.round(WORLD_WIDTH * 0.137) },
+    { cx: Math.round(WORLD_WIDTH * 0.500), surfaceY: Math.round(WORLD_HEIGHT * 0.439), width: Math.round(WORLD_WIDTH * 0.117) },
+  ];
+}
 
 type FireballVisual = {
   x: number;
@@ -128,10 +145,16 @@ type FireballVisual = {
   trailTimer: number;
   sprite: Phaser.GameObjects.Image;
 };
-let FIREBALL_SPEED = 680;        // px/s — kept in sync with server FireballSpeed rule
-let PLAYER_SIZE = 1.0;           // scale factor — kept in sync with server PlayerSize rule
-const FIREBALL_TRAIL_EVERY = 3;  // frames between trail samples
-const FIREBALL_TRAIL_MAX = 10;   // how many trail points to keep
+let FIREBALL_SPEED = 680;          // px/s — kept in sync with server FireballSpeed rule
+let PLAYER_SIZE = 1.0;             // scale factor — kept in sync with server PlayerSize rule
+let PLAYER_COLLISION_RADIUS = 30;  // px — kept in sync with server PlayerCollisionRadius rule
+let FIREBALL_HIT_RADIUS = 20;      // px — kept in sync with server FireballHitRadius rule
+let MANNA_COLLECT_RADIUS = 28;     // px — kept in sync with server MannaCollectRadius rule
+const MONSTER_HALF_HEIGHT = 45;    // matches server MonsterHalfHeight constant
+const MONSTER_HALF_WIDTH = 30;     // matches server MonsterHalfWidth constant
+const MONSTER_CONTACT_RADIUS = 38; // matches server MonsterContactRadius constant
+const FIREBALL_TRAIL_EVERY = 3;    // frames between trail samples
+const FIREBALL_TRAIL_MAX = 10;     // how many trail points to keep
 
 type EmoteCode = "dove" | "trumpet" | "bread" | "laugh" | "wave";
 const MANNA_NOTICE_TEXT = "הִנְנִי מַמְטִיר לָכֶם מָן מִן-הַשָּׁמָיִם";
@@ -313,21 +336,32 @@ class PlayerAvatar {
     ]);
     this.root.add([this.shadow, this.mannaHalo, this.figure, ...this.liveDots, this.nameLabel, this.emoteLabel]);
 
-    // Derive all body-part positions from sprite natural dimensions so any sprite
-    // size produces correct proportions without needing hardcoded pixel values.
+    // Derive all body-part positions from sprite natural dimensions.
+    // Step 1: compute layout with origin at body centre (proportional to sprite sizes).
+    // Step 2: shift everything so the visual foot contact point lands at y=0 in the
+    //         container — that way root.y == player.y (feet Y) and no per-sprite offset
+    //         is ever needed for ground/platform contact.
     const torsoH = this.torso.height;
     const torsoW = this.torso.width;
     const headH  = this.head.height;
     const legH   = this.legFront.height;
-    const dotH   = this.liveDots[0].height;
     const dotW   = this.liveDots[0].width;
 
-    this.torsoBaseY      = -(torsoH * 0.071);
-    const shoulderY      = this.torsoBaseY - torsoH * 0.25;
-    const hipY           = this.torsoBaseY + torsoH * 0.5;
-    this.headBaseY       = this.torsoBaseY - torsoH * 0.5 - headH * 0.318;
-    this.mannaHaloBaseY  = this.torsoBaseY - torsoH * 0.25;
-    this.nameLabelBaseY  = hipY + legH * 1.738;
+    const torsoBaseY0  = -(torsoH * 0.071);            // torso centre, relative to old origin
+    const shoulderY0   = torsoBaseY0 - torsoH * 0.25;
+    const hipY0        = torsoBaseY0 + torsoH * 0.5;
+    const headBaseY0   = torsoBaseY0 - torsoH * 0.5 - headH * 0.318;
+
+    // Actual feet position (leg pivot is at hip, origin (0.5,0.08), so bottom = hipY0 + legH*0.92)
+    const feetY0       = hipY0 + legH * 0.92;
+    const shift        = -feetY0;                       // amount to lift everything so feet → y=0
+
+    this.torsoBaseY      = torsoBaseY0 + shift;
+    const shoulderY      = shoulderY0  + shift;
+    const hipY           = hipY0       + shift;
+    this.headBaseY       = headBaseY0  + shift;
+    this.mannaHaloBaseY  = shoulderY0  + shift;
+    this.nameLabelBaseY  = hipY        + legH * 1.738;
     this.emoteBaseY      = this.headBaseY - headH * 1.682;
     this.emoteActiveBaseY = this.emoteBaseY - headH * 0.18;
 
@@ -455,10 +489,9 @@ class PlayerAvatar {
 
     // Project shadow onto the fixed ground surface (Y=707) regardless of player size.
     // Feet are at root.y + 27*ps in world space; shadow local Y must compensate for root scale.
-    const groundSurfaceY = GROUND_Y + 27; // 707 — fixed pixel row where feet touch ground
-    const feetWorldY = this.root.y + 27 * ps;
-    const heightAboveGround = Math.max(0, groundSurfaceY - feetWorldY);
-    const shadowLocalY = 27 + heightAboveGround / ps;
+    const feetWorldY = this.root.y; // root.y IS the feet Y in world space
+    const heightAboveGround = Math.max(0, GROUND_Y - feetWorldY);
+    const shadowLocalY = heightAboveGround / ps;
     const shadowScale = Math.max(0.35, 1 - heightAboveGround / 350);
     this.shadow.x = wind.x * 0.3;
     this.shadow.y = shadowLocalY + (wind.y * 0.36);
@@ -613,6 +646,14 @@ class PlayerAvatar {
     };
   }
 
+  public getPosition(): { x: number; y: number } {
+    return { x: this.root.x, y: this.root.y };
+  }
+
+  public getContainer(): Phaser.GameObjects.Container {
+    return this.root;
+  }
+
   public destroy(): void {
     this.root.destroy(true);
   }
@@ -638,20 +679,32 @@ class MonsterAvatar {
 
     this.root = scene.add.container(snapshot.x, snapshot.y).setDepth(490);
 
-    // 4 legs at evenly-spaced X positions, hanging below head
-    const legXs = [-22, -7, 7, 22];
-    this.legs = legXs.map(lx =>
-      scene.add.image(lx, 15, 'monster_leg').setOrigin(0.5, 0).setDisplaySize(10, 30)
+    // Place at origin temporarily; final positions derived from natural sprite dimensions below.
+    this.legs = [-44, -14, 14, 44].map(lx =>
+      scene.add.image(lx, 0, 'monster_leg').setOrigin(0.5, 0)
     );
-
-    this.head = scene.add.image(0, 0, 'monster_head').setOrigin(0.5, 0.5).setDisplaySize(60, 60);
-
-    // 2 HP dots above head
-    this.hpDots = [-7, 7].map(dx =>
-      scene.add.image(dx, -40, 'life_dot').setDisplaySize(10, 10)
+    this.head = scene.add.image(0, 0, 'monster_head').setOrigin(0.5, 0.5);
+    this.hpDots = [-14, 14].map(dx =>
+      scene.add.image(dx, 0, 'life_dot')
     );
 
     this.root.add([...this.legs, this.head, ...this.hpDots]);
+
+    // Derive layout from sprite natural dimensions so feet land at y=0 in this container
+    // (root.y == snapshot.y == feet Y in world space).
+    const headH = this.head.height;
+    const legH  = this.legs[0].height;
+    const dotH  = this.hpDots[0].height;
+
+    // Pre-shift: head center at 0, leg pivots attach a quarter of the way down the head body.
+    const legTopY0 = headH * 0.25;
+    const feetY0   = legTopY0 + legH;
+    const shift    = -feetY0;
+
+    this.head.y = shift;
+    for (const leg of this.legs) leg.y = legTopY0 + shift;
+    for (const dot of this.hpDots) dot.y = shift - headH * 0.5 - dotH;
+
     this.sync(snapshot);
   }
 
@@ -690,12 +743,17 @@ class MonsterAvatar {
     }
   }
 
+  public getPosition(): { x: number; y: number } {
+    return { x: this.root.x, y: this.root.y };
+  }
+
   public destroy(): void {
     this.root.destroy(true);
   }
 }
 
 class CloudDarknessOverlay {
+  private readonly scene: Phaser.Scene;
   private readonly darkness: Phaser.GameObjects.Rectangle;
   private readonly maskShape: Phaser.GameObjects.Graphics;
   private readonly darknessMask: Phaser.Display.Masks.GeometryMask;
@@ -707,9 +765,14 @@ class CloudDarknessOverlay {
   private radius = 140;
 
   public constructor(scene: Phaser.Scene, initialCloud: CloudSnapshot) {
-    this.darkness = scene.add.rectangle(0, 0, WORLD_WIDTH, WORLD_HEIGHT, 0x020406, 0);
+    this.scene = scene;
+    // Darkness covers the whole viewport in screen space (scrollFactor 0).
+    this.darkness = scene.add.rectangle(0, 0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT, 0x020406, 0);
     this.darkness.setOrigin(0, 0);
     this.darkness.setDepth(880);
+    this.darkness.setScrollFactor(0);
+    // maskShape is rendered to the stencil without camera transforms,
+    // so coordinates are in screen (viewport) space — convert in draw().
     this.maskShape = scene.make.graphics({ x: 0, y: 0, add: false });
     this.darknessMask = this.maskShape.createGeometryMask();
     this.darknessMask.invertAlpha = true;
@@ -729,7 +792,7 @@ class CloudDarknessOverlay {
     }
   }
 
-  public draw(nowMs: number): void {
+  public draw(nowMs: number, cam: Phaser.Cameras.Scene2D.Camera): void {
     const targetAlpha = this.cloud.isActive ? 0.62 : 0;
     this.alpha = Phaser.Math.Linear(this.alpha, targetAlpha, this.cloud.isActive ? 0.08 : 0.05);
 
@@ -741,9 +804,14 @@ class CloudDarknessOverlay {
       return;
     }
 
+    // maskShape renders in screen space (no camera transform), so convert world → screen.
+    const sx = (this.centerX - cam.scrollX) * cam.zoom;
+    const sy = (this.centerY - cam.scrollY) * cam.zoom;
+    const sr = this.radius * cam.zoom;
     this.maskShape.fillStyle(0xffffff, 1);
-    this.maskShape.fillCircle(this.centerX, this.centerY, this.radius);
+    this.maskShape.fillCircle(sx, sy, sr);
 
+    // smoke is a world-space Graphics object — use world coordinates.
     const smokeCount = 46;
     for (let index = 0; index < smokeCount; index += 1) {
       const seed = (index * 0.37) + (index % 7) * 0.13;
@@ -1093,10 +1161,14 @@ class DesertScene extends Phaser.Scene {
   private currentView: RoundView | null = null;
   private readonly fireballs = new Map<string, FireballVisual>();
   private fireballGfx!: Phaser.GameObjects.Graphics;
+  private debugHitboxGfx!: Phaser.GameObjects.Graphics;
+  public debugHitboxes = false;
   private platformImages: Phaser.GameObjects.Image[] = [];
+  private currentPlatforms: PlatformDto[] = [];
+  private currentMonsters: MonsterSnapshot[] = [];
   private readonly monsterAvatars = new Map<string, MonsterAvatar>();
   private editorGfx: Phaser.GameObjects.Graphics | null = null;
-  private editorInteraction: 'add' | 'add-monster' | 'move' | null = null;
+  private editorInteraction: 'add' | 'add-monster' | 'add-object' | 'move' | null = null;
   private editorPlatformsRef: PlatformDto[] | null = null;
   private editorOnChange: ((platforms: PlatformDto[]) => void) | null = null;
   private editorOnApply: (() => void) | null = null;
@@ -1105,16 +1177,25 @@ class DesertScene extends Phaser.Scene {
   private editorMonsterOnChange: ((spawns: MonsterSpawnDto[]) => void) | null = null;
   private editorMonsterOnApply: (() => void) | null = null;
   private selectedMonsterIndex: number | null = null;
+  private editorSceneryRef: SceneryObjectDto[] | null = null;
+  private editorSceneryOnChange: ((objects: SceneryObjectDto[]) => void) | null = null;
+  private editorSceneryOnApply: (() => void) | null = null;
+  private editorSelectedScenery: { key: string; solid: boolean } | null = null;
+  private selectedSceneryIndex: number | null = null;
+  private readonly sceneryImages: Map<string, Phaser.GameObjects.Image> = new Map();
   private spawnIdCounter = 0;
-  private dragState: {
-    type: 'move' | 'resize-left' | 'resize-right';
-    index: number;
-    startX: number;
-    startY: number;
-    origCx: number;
-    origSy: number;
-    origWidth: number;
-  } | null = null;
+  private sceneryIdCounter = 0;
+  private localPlayerId: string | null = null;
+  private editorActive = false;
+  private editorKeyW: Phaser.Input.Keyboard.Key | null = null;
+  private editorKeyA: Phaser.Input.Keyboard.Key | null = null;
+  private editorKeyS: Phaser.Input.Keyboard.Key | null = null;
+  private editorKeyD: Phaser.Input.Keyboard.Key | null = null;
+  private dragState: (
+    { type: 'move' | 'resize-left' | 'resize-right'; index: number; startX: number; startY: number; origCx: number; origSy: number; origWidth: number; } |
+    { type: 'move-obj'; idx: number; startX: number; startY: number; origX: number; origY: number; } |
+    { type: 'resize-obj-corner'; idx: number; fixedX: number; fixedY: number; signX: 1 | -1; signY: 1 | -1; origW: number; origH: number; }
+  ) | null = null;
 
   public constructor(hooks: SceneHooks, initialWave: WaveSnapshot, initialCloud: CloudSnapshot) {
     super("desert");
@@ -1128,11 +1209,14 @@ class DesertScene extends Phaser.Scene {
     // Sky: warm tan fading to hazy horizon
     graphics.fillGradientStyle(0xf0dca8, 0xf0dca8, 0xe8c07a, 0xe8c07a, 1);
     graphics.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-    // Distant dune silhouettes on the horizon
-    graphics.fillStyle(0xd4a05a, 0.35);
-    graphics.fillEllipse(200, WORLD_HEIGHT - 80, 520, 130);
-    graphics.fillEllipse(700, WORLD_HEIGHT - 70, 680, 110);
-    graphics.fillEllipse(1000, WORLD_HEIGHT - 85, 380, 120);
+    // Distant dune silhouettes spread across the full world width
+    const duneXFracs = [0.07, 0.17, 0.28, 0.40, 0.52, 0.63, 0.75, 0.87, 0.95];
+    for (let i = 0; i < duneXFracs.length; i++) {
+      const w = 260 + (i % 4) * 120;
+      const h = 100 + (i % 3) * 30;
+      graphics.fillStyle(0xd4a05a, 0.25 + (i % 3) * 0.05);
+      graphics.fillEllipse(WORLD_WIDTH * duneXFracs[i], WORLD_HEIGHT - 78, w, h);
+    }
     graphics.generateTexture("desert-bg", WORLD_WIDTH, WORLD_HEIGHT);
     graphics.destroy();
     // Sprite files live in public/sprites/ — replace with your own pixel art at the same sizes.
@@ -1152,13 +1236,16 @@ class DesertScene extends Phaser.Scene {
   }
 
   public create(): void {
+    this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
     this.add.image(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, "desert-bg");
     this.addGround();
-    this.syncPlatforms(DEFAULT_PLATFORMS);
+    this.syncPlatforms(makeDefaultPlatforms());
     this.addDunes();
-    this.victoryBackdrop = this.add.rectangle(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, WORLD_WIDTH, WORLD_HEIGHT, 0x000000, 0).setDepth(930);
+    // Victory elements are screen-fixed (scrollFactor 0) so they stay centred as the camera pans.
+    this.victoryBackdrop = this.add.rectangle(VIEWPORT_WIDTH / 2, VIEWPORT_HEIGHT / 2, VIEWPORT_WIDTH, VIEWPORT_HEIGHT, 0x000000, 0)
+      .setDepth(930).setScrollFactor(0);
     this.victoryBackdrop.setVisible(false);
-    this.victoryTitle = this.add.text(WORLD_WIDTH / 2, 194, "", {
+    this.victoryTitle = this.add.text(VIEWPORT_WIDTH / 2, 194, "", {
       fontFamily: '"Trebuchet MS", "Gill Sans", sans-serif',
       fontSize: "54px",
       fontStyle: "900",
@@ -1166,16 +1253,16 @@ class DesertScene extends Phaser.Scene {
       stroke: "#000000",
       strokeThickness: 8,
       align: "center"
-    }).setOrigin(0.5, 0.5).setDepth(970);
+    }).setOrigin(0.5, 0.5).setDepth(970).setScrollFactor(0);
     this.victoryTitle.setVisible(false);
-    this.victorySubtitle = this.add.text(WORLD_WIDTH / 2, 252, "", {
+    this.victorySubtitle = this.add.text(VIEWPORT_WIDTH / 2, 252, "", {
       fontFamily: '"Trebuchet MS", "Gill Sans", sans-serif',
       fontSize: "20px",
       color: "#fff0b4",
       stroke: "#000000",
       strokeThickness: 6,
       align: "center"
-    }).setOrigin(0.5, 0.5).setDepth(970);
+    }).setOrigin(0.5, 0.5).setDepth(970).setScrollFactor(0);
     this.victorySubtitle.setVisible(false);
     const wave = this.currentView?.wave ?? {
       isActive: false,
@@ -1199,6 +1286,13 @@ class DesertScene extends Phaser.Scene {
     this.decorations = new DecorationDirector(this);
     this.mannaDirector = new MannaDirector(this, this.decorations);
     this.fireballGfx = this.add.graphics().setDepth(700);
+    this.debugHitboxGfx = this.add.graphics().setDepth(999);
+    if (this.input.keyboard) {
+      this.editorKeyW = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W);
+      this.editorKeyA = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A);
+      this.editorKeyS = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.S);
+      this.editorKeyD = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D);
+    }
 
     this.add.text(8, 8, `v${APP_VERSION}`, {
       fontFamily: '"Trebuchet MS", "Gill Sans", sans-serif',
@@ -1211,7 +1305,7 @@ class DesertScene extends Phaser.Scene {
     }
   }
 
-  public syncRound(view: RoundView, selfId: string | null, fireballs: FireballSnapshot[], monsters: MonsterSnapshot[]): void {
+  public syncRound(view: RoundView, selfId: string | null, fireballs: FireballSnapshot[] = [], monsters: MonsterSnapshot[] = []): void {
     this.currentView = view;
     if (!this.cloudOverlay || !this.waveOverlay || !this.decorations) {
       return;
@@ -1228,6 +1322,7 @@ class DesertScene extends Phaser.Scene {
   }
 
   public syncMonsters(monsters: MonsterSnapshot[]): void {
+    this.currentMonsters = monsters;
     const seen = new Set<string>();
     for (const m of monsters) {
       seen.add(m.id);
@@ -1294,9 +1389,66 @@ class DesertScene extends Phaser.Scene {
     }
   }
 
+  private drawDebugHitboxes(): void {
+    this.debugHitboxGfx.clear();
+    if (!this.debugHitboxes || !this.currentView) return;
+
+    const g = this.debugHitboxGfx;
+    g.lineStyle(1, 0xff0000, 0.85);
+
+    // Players: pos.y = feet; circle at body centre; rect from head to feet
+    const playerHalfH = 27 * PLAYER_SIZE;
+    const playerRadius = PLAYER_COLLISION_RADIUS * PLAYER_SIZE;
+    for (const p of this.currentView.players) {
+      if (!p.isAlive) continue;
+      const pos = this.avatars.get(p.id)?.getPosition() ?? { x: p.x, y: p.y };
+      g.strokeCircle(pos.x, pos.y - playerHalfH, playerRadius);
+      g.strokeRect(pos.x - playerRadius, pos.y - playerHalfH * 2,
+        playerRadius * 2, playerHalfH * 2);
+    }
+
+    // Platforms — surface line
+    for (const p of this.currentPlatforms) {
+      g.strokeRect(p.cx - p.width / 2, p.surfaceY, p.width, 4);
+    }
+
+    // Monsters — physics rect + contact circle (use avatar's lerped visual position)
+    // pos.y is feet; body centre is pos.y - MONSTER_HALF_HEIGHT (matches server semantics).
+    for (const [, avatar] of this.monsterAvatars) {
+      const pos = avatar.getPosition();
+      const monsterCenterY = pos.y - MONSTER_HALF_HEIGHT;
+      g.strokeRect(pos.x - MONSTER_HALF_WIDTH, monsterCenterY - MONSTER_HALF_HEIGHT,
+        MONSTER_HALF_WIDTH * 2, MONSTER_HALF_HEIGHT * 2);
+      g.strokeCircle(pos.x, monsterCenterY, MONSTER_CONTACT_RADIUS);
+    }
+
+    // Fireballs — hit circle
+    for (const fb of this.fireballs.values()) {
+      g.strokeCircle(fb.x, fb.y, FIREBALL_HIT_RADIUS);
+    }
+
+    // Manna pickups — collect circle
+    if (this.currentView.manna?.isActive) {
+      for (const pickup of this.currentView.manna.pickups) {
+        if (!pickup.isCollected) {
+          g.strokeCircle(pickup.x, pickup.y, MANNA_COLLECT_RADIUS);
+        }
+      }
+    }
+  }
+
   public update(_time: number, delta: number): void {
     if (!this.currentView) {
       return;
+    }
+
+    if (this.editorActive) {
+      const cam = this.cameras.main;
+      const speed = (600 / cam.zoom) * (delta / 1000);
+      if (this.editorKeyW?.isDown) cam.scrollY -= speed;
+      if (this.editorKeyS?.isDown) cam.scrollY += speed;
+      if (this.editorKeyA?.isDown) cam.scrollX -= speed;
+      if (this.editorKeyD?.isDown) cam.scrollX += speed;
     }
 
     const now = this.time.now;
@@ -1310,10 +1462,11 @@ class DesertScene extends Phaser.Scene {
       monster.update(delta, now);
     }
 
-    this.cloudOverlay?.draw(now);
+    this.cloudOverlay?.draw(now, this.cameras.main);
     this.waveOverlay?.draw(now);
     this.mannaDirector?.update(now);
     this.updateFireballs(delta);
+    this.drawDebugHitboxes();
 
     if (this.currentView?.gameOver && this.currentView.winner && this.decorations && now >= this.nextVictoryConfettiAt) {
       const centerX = WORLD_WIDTH * 0.5;
@@ -1332,6 +1485,40 @@ class DesertScene extends Phaser.Scene {
 
   public getAvatar(id: string): PlayerAvatar | null {
     return this.avatars.get(id) ?? null;
+  }
+
+  public setLocalPlayerId(id: string | null): void {
+    this.localPlayerId = id;
+    if (id) {
+      const avatar = this.avatars.get(id);
+      if (avatar) this.startFollowingAvatar(avatar);
+    } else {
+      this.cameras.main.stopFollow();
+    }
+  }
+
+  public updateCameraBounds(): void {
+    this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+  }
+
+  public setCameraZoomToFit(): void {
+    const zoom = Math.min(VIEWPORT_WIDTH / WORLD_WIDTH, VIEWPORT_HEIGHT / WORLD_HEIGHT);
+    this.cameras.main.setZoom(zoom);
+    this.cameras.main.stopFollow();
+    this.cameras.main.centerOn(WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+  }
+
+  public resetCameraZoom(): void {
+    this.cameras.main.setZoom(1);
+    if (this.localPlayerId) {
+      const avatar = this.avatars.get(this.localPlayerId);
+      if (avatar) this.startFollowingAvatar(avatar);
+    }
+  }
+
+  private startFollowingAvatar(avatar: PlayerAvatar): void {
+    this.cameras.main.startFollow(avatar.getContainer(), true, 0.1, 0.1);
+    this.cameras.main.setDeadzone(VIEWPORT_WIDTH * 0.3, VIEWPORT_HEIGHT * 0.3);
   }
 
   public getMannaPlaybackState(nowMs = this.time.now): { cycleId: number | null; phase: "inactive" | "steady" | "blink" | "expired"; elapsedMs: number } {
@@ -1377,6 +1564,7 @@ class DesertScene extends Phaser.Scene {
 
       const avatar = new PlayerAvatar(this, player);
       this.avatars.set(player.id, avatar);
+      if (player.id === this.localPlayerId) this.startFollowingAvatar(avatar);
     }
 
     const victoryActive = Boolean(this.currentView?.gameOver && this.currentView?.winner);
@@ -1484,7 +1672,7 @@ class DesertScene extends Phaser.Scene {
   }
 
   private addGround(): void {
-    const groundSurfaceY = GROUND_Y + 27; // pixel Y where feet touch ground
+    const groundSurfaceY = GROUND_Y;
     const groundBodyH = WORLD_HEIGHT - groundSurfaceY;
     // Ground fill
     const groundBody = this.add.rectangle(WORLD_WIDTH / 2, groundSurfaceY + groundBodyH / 2, WORLD_WIDTH, groundBodyH + 4, 0xc8864e, 1);
@@ -1499,6 +1687,7 @@ class DesertScene extends Phaser.Scene {
   }
 
   public syncPlatforms(platforms: PlatformDto[]): void {
+    this.currentPlatforms = platforms;
     if (this.platformImages.length !== platforms.length) {
       for (const img of this.platformImages) img.destroy();
       this.platformImages = platforms.map(p =>
@@ -1513,33 +1702,92 @@ class DesertScene extends Phaser.Scene {
     this.updateEditorOverlay(platforms);
   }
 
+  public syncScenery(objects: SceneryObjectDto[]): void {
+    if (this.editorSceneryRef !== objects) {
+      this.editorSceneryRef = objects;
+      this.selectedSceneryIndex = null;
+    }
+    const seen = new Set<string>();
+    for (const obj of objects) {
+      seen.add(obj.id);
+      const textureKey = `scenery_${obj.spriteKey}`;
+      const place = (img: Phaser.GameObjects.Image) => {
+        img.setPosition(obj.x + obj.width / 2, obj.y + obj.height / 2)
+           .setDisplaySize(obj.width, obj.height)
+           .setDepth(4);
+      };
+      if (this.sceneryImages.has(obj.id)) {
+        place(this.sceneryImages.get(obj.id)!);
+      } else if (this.textures.exists(textureKey)) {
+        const img = this.add.image(0, 0, textureKey);
+        place(img);
+        this.sceneryImages.set(obj.id, img);
+      } else {
+        this.load.image(textureKey, `/sprites/objects/${obj.spriteKey}`);
+        this.load.once(Phaser.Loader.Events.COMPLETE, () => {
+          if (!this.sceneryImages.has(obj.id)) {
+            const img = this.add.image(0, 0, textureKey);
+            place(img);
+            this.sceneryImages.set(obj.id, img);
+          }
+        });
+        this.load.start();
+      }
+    }
+    for (const [id, img] of this.sceneryImages) {
+      if (!seen.has(id)) { img.destroy(); this.sceneryImages.delete(id); }
+    }
+    this.updateEditorOverlay(this.editorPlatformsRef ?? []);
+  }
+
   public setEditorInteraction(
-    mode: 'add' | 'add-monster' | 'move' | null,
+    mode: 'add' | 'add-monster' | 'add-object' | 'move' | null,
     platforms: PlatformDto[] | null,
     monsterSpawns: MonsterSpawnDto[] | null,
+    sceneryObjects: SceneryObjectDto[] | null,
+    selectedScenery: { key: string; solid: boolean } | null,
     onChange: ((platforms: PlatformDto[]) => void) | null,
     onMonsterChange: ((spawns: MonsterSpawnDto[]) => void) | null,
+    onSceneryChange: ((objects: SceneryObjectDto[]) => void) | null,
     onApply?: (() => void) | null
   ): void {
     this.editorInteraction = mode;
     this.editorPlatformsRef = platforms;
     this.editorMonsterSpawnsRef = monsterSpawns;
+    this.editorSceneryRef = sceneryObjects;
+    this.editorSelectedScenery = selectedScenery;
     this.editorOnChange = onChange;
     this.editorMonsterOnChange = onMonsterChange;
+    this.editorSceneryOnChange = onSceneryChange;
     this.editorOnApply = onApply ?? null;
     this.editorMonsterOnApply = onApply ?? null;
+    this.editorSceneryOnApply = onApply ?? null;
     this.dragState = null;
     this.selectedIndex = null;
     this.selectedMonsterIndex = null;
+    this.selectedSceneryIndex = null;
+    this.editorActive = mode !== null;
     this.input.off('pointerdown');
     this.input.off('pointermove');
     this.input.off('pointerup');
     if (this.game?.canvas) this.game.canvas.style.cursor = '';
 
+    if (mode !== null) {
+      // Stop following player while editor is open; pan with WASD in update().
+      this.cameras.main.stopFollow();
+    } else {
+      // Editor closed — restart following if we have a local player.
+      if (this.localPlayerId) {
+        const avatar = this.avatars.get(this.localPlayerId);
+        if (avatar) this.startFollowingAvatar(avatar);
+      }
+    }
+
     if (mode === 'add') {
       this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        if (pointer.button !== 0) return;
         if (this.editorPlatformsRef && this.editorOnChange) {
-          this.editorPlatformsRef.push({ cx: Math.round(pointer.x), surfaceY: Math.round(pointer.y), width: 160 });
+          this.editorPlatformsRef.push({ cx: Math.round(pointer.worldX), surfaceY: Math.round(pointer.worldY), width: 160 });
           this.syncPlatforms(this.editorPlatformsRef);
           this.editorOnChange(this.editorPlatformsRef);
           this.editorOnApply?.();
@@ -1548,36 +1796,80 @@ class DesertScene extends Phaser.Scene {
       if (this.game?.canvas) this.game.canvas.style.cursor = 'crosshair';
     } else if (mode === 'add-monster') {
       this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        if (pointer.button !== 0) return;
         if (this.editorMonsterSpawnsRef && this.editorMonsterOnChange) {
           const id = `spawn-${Date.now()}-${this.spawnIdCounter++}`;
-          this.editorMonsterSpawnsRef.push({ id, x: Math.round(pointer.x), y: Math.round(pointer.y) });
+          this.editorMonsterSpawnsRef.push({ id, x: Math.round(pointer.worldX), y: Math.round(pointer.worldY) });
           this.editorMonsterOnChange(this.editorMonsterSpawnsRef);
           this.editorMonsterOnApply?.();
           this.updateEditorOverlay(this.editorPlatformsRef ?? []);
         }
       });
       if (this.game?.canvas) this.game.canvas.style.cursor = 'crosshair';
+    } else if (mode === 'add-object') {
+      this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        if (pointer.button !== 0) return;
+        const sel = this.editorSelectedScenery;
+        if (!sel || !this.editorSceneryRef || !this.editorSceneryOnChange) return;
+        const { key, solid } = sel;
+        const id = `obj-${Date.now()}-${this.sceneryIdCounter++}`;
+        const defaultSize = 64;
+        const obj: SceneryObjectDto = {
+          id, spriteKey: key,
+          x: Math.round(pointer.worldX - defaultSize / 2),
+          y: Math.round(pointer.worldY - defaultSize / 2),
+          width: defaultSize, height: defaultSize,
+          solid
+        };
+        this.editorSceneryRef.push(obj);
+        this.editorSceneryOnChange(this.editorSceneryRef);
+        this.editorSceneryOnApply?.();
+        this.syncScenery(this.editorSceneryRef);
+      });
+      if (this.game?.canvas) this.game.canvas.style.cursor = 'crosshair';
     } else if (mode === 'move') {
       this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-        // Check monster spawns first (smaller hit targets)
-        const monsterHit = this.hitTestMonsterSpawn(pointer.x, pointer.y);
+        if (pointer.button !== 0) return;
+
+        // Priority: scenery corner → scenery body → monster → platform
+        const sceneryCorner = this.hitTestSceneryCorner(pointer.worldX, pointer.worldY);
+        if (sceneryCorner !== null) {
+          this.dragState = sceneryCorner;
+          if (this.game?.canvas) this.game.canvas.style.cursor = 'nwse-resize';
+          return;
+        }
+        const sceneryBody = this.hitTestSceneryBody(pointer.worldX, pointer.worldY);
+        if (sceneryBody !== null) {
+          this.selectedSceneryIndex = sceneryBody;
+          this.selectedIndex = null;
+          this.selectedMonsterIndex = null;
+          const o = this.editorSceneryRef![sceneryBody];
+          this.dragState = { type: 'move-obj', idx: sceneryBody, startX: pointer.worldX, startY: pointer.worldY, origX: o.x, origY: o.y };
+          this.updateEditorOverlay(this.editorPlatformsRef ?? []);
+          if (this.game?.canvas) this.game.canvas.style.cursor = 'grabbing';
+          return;
+        }
+
+        const monsterHit = this.hitTestMonsterSpawn(pointer.worldX, pointer.worldY);
         if (monsterHit !== null) {
           this.selectedMonsterIndex = monsterHit;
           this.selectedIndex = null;
+          this.selectedSceneryIndex = null;
           this.updateEditorOverlay(this.editorPlatformsRef ?? []);
           return;
         }
 
         if (!this.editorPlatformsRef) return;
-        const hit = this.hitTestPlatform(pointer.x, pointer.y);
+        const hit = this.hitTestPlatform(pointer.worldX, pointer.worldY);
         this.selectedIndex = hit?.index ?? null;
         this.selectedMonsterIndex = null;
+        this.selectedSceneryIndex = null;
         this.updateEditorOverlay(this.editorPlatformsRef);
         if (!hit) return;
         const p = this.editorPlatformsRef[hit.index];
         this.dragState = {
           type: hit.type, index: hit.index,
-          startX: pointer.x, startY: pointer.y,
+          startX: pointer.worldX, startY: pointer.worldY,
           origCx: p.cx, origSy: p.surfaceY, origWidth: p.width
         };
         if (this.game?.canvas) this.game.canvas.style.cursor = hit.type === 'move' ? 'grabbing' : 'ew-resize';
@@ -1585,18 +1877,54 @@ class DesertScene extends Phaser.Scene {
       this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
         this.handleMovePointerMove(pointer);
       });
-      this.input.on('pointerup', () => {
-        const wasDragging = this.dragState !== null;
+      this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+        if (pointer.button !== 0) return;
+        const state = this.dragState;
         this.dragState = null;
         if (this.game?.canvas) this.game.canvas.style.cursor = 'default';
-        if (wasDragging) this.editorOnApply?.();
+        if (state?.type === 'move-obj' || state?.type === 'resize-obj-corner') {
+          this.editorSceneryOnApply?.();
+        } else if (state) {
+          this.editorOnApply?.();
+        }
       });
     } else {
       this.editorGfx?.clear();
     }
 
-    if (platforms || monsterSpawns) this.updateEditorOverlay(platforms ?? []);
+    if (platforms || monsterSpawns || sceneryObjects) this.updateEditorOverlay(platforms ?? []);
     else this.editorGfx?.clear();
+  }
+
+  private hitTestSceneryBody(px: number, py: number): number | null {
+    const objs = this.editorSceneryRef;
+    if (!objs) return null;
+    for (let i = objs.length - 1; i >= 0; i--) {
+      const o = objs[i];
+      if (px >= o.x && px <= o.x + o.width && py >= o.y && py <= o.y + o.height) return i;
+    }
+    return null;
+  }
+
+  private hitTestSceneryCorner(px: number, py: number): Extract<DesertScene['dragState'], { type: 'resize-obj-corner' }> | null {
+    if (this.selectedSceneryIndex === null || !this.editorSceneryRef) return null;
+    const o = this.editorSceneryRef[this.selectedSceneryIndex];
+    if (!o) return null;
+    const R = 8;
+    const corners: [number, number, 1 | -1, 1 | -1][] = [
+      [o.x,           o.y,            -1, -1], // TL
+      [o.x + o.width, o.y,             1, -1], // TR
+      [o.x,           o.y + o.height, -1,  1], // BL
+      [o.x + o.width, o.y + o.height,  1,  1], // BR
+    ];
+    for (const [cx, cy, sx, sy] of corners) {
+      if (Math.abs(px - cx) <= R && Math.abs(py - cy) <= R) {
+        const fixedX = sx > 0 ? o.x           : o.x + o.width;
+        const fixedY = sy > 0 ? o.y           : o.y + o.height;
+        return { type: 'resize-obj-corner', idx: this.selectedSceneryIndex, fixedX, fixedY, signX: sx, signY: sy, origW: o.width, origH: o.height };
+      }
+    }
+    return null;
   }
 
   private hitTestMonsterSpawn(px: number, py: number): number | null {
@@ -1644,30 +1972,59 @@ class DesertScene extends Phaser.Scene {
     const platforms = this.editorPlatformsRef;
     if (!platforms) return;
     if (this.dragState) {
-      const dx = pointer.x - this.dragState.startX;
-      const dy = pointer.y - this.dragState.startY;
-      const p = platforms[this.dragState.index];
-      if (this.dragState.type === 'move') {
-        p.cx = Math.round(this.dragState.origCx + dx);
-        p.surfaceY = Math.round(this.dragState.origSy + dy);
-      } else if (this.dragState.type === 'resize-right') {
-        const origLeft = this.dragState.origCx - this.dragState.origWidth / 2;
-        const newWidth = Math.max(40, this.dragState.origWidth + dx);
-        p.width = Math.round(newWidth);
-        p.cx = Math.round(origLeft + newWidth / 2);
+      const state = this.dragState;
+      if (state.type === 'move-obj') {
+        const o = this.editorSceneryRef?.[state.idx];
+        if (o) {
+          o.x = Math.round(state.origX + (pointer.worldX - state.startX));
+          o.y = Math.round(state.origY + (pointer.worldY - state.startY));
+          this.syncScenery(this.editorSceneryRef!);
+          this.editorSceneryOnChange?.(this.editorSceneryRef!);
+        }
+      } else if (state.type === 'resize-obj-corner') {
+        const o = this.editorSceneryRef?.[state.idx];
+        if (o) {
+          const rawW = state.signX * (pointer.worldX - state.fixedX);
+          const newW = Math.max(20, rawW);
+          const aspect = state.origW / state.origH;
+          const newH = Math.max(20, newW / aspect);
+          o.width  = Math.round(newW);
+          o.height = Math.round(newH);
+          o.x = Math.round(state.signX > 0 ? state.fixedX : state.fixedX - newW);
+          o.y = Math.round(state.signY > 0 ? state.fixedY : state.fixedY - newH);
+          this.syncScenery(this.editorSceneryRef!);
+          this.editorSceneryOnChange?.(this.editorSceneryRef!);
+        }
       } else {
-        const origRight = this.dragState.origCx + this.dragState.origWidth / 2;
-        const newWidth = Math.max(40, this.dragState.origWidth - dx);
-        p.width = Math.round(newWidth);
-        p.cx = Math.round(origRight - newWidth / 2);
+        const dx = pointer.worldX - state.startX;
+        const dy = pointer.worldY - state.startY;
+        const p = platforms[state.index];
+        if (state.type === 'move') {
+          p.cx = Math.round(state.origCx + dx);
+          p.surfaceY = Math.round(state.origSy + dy);
+        } else if (state.type === 'resize-right') {
+          const origLeft = state.origCx - state.origWidth / 2;
+          const newWidth = Math.max(40, state.origWidth + dx);
+          p.width = Math.round(newWidth);
+          p.cx = Math.round(origLeft + newWidth / 2);
+        } else {
+          const origRight = state.origCx + state.origWidth / 2;
+          const newWidth = Math.max(40, state.origWidth - dx);
+          p.width = Math.round(newWidth);
+          p.cx = Math.round(origRight - newWidth / 2);
+        }
+        this.syncPlatforms(platforms);
+        this.editorOnChange?.(platforms);
       }
-      this.syncPlatforms(platforms);
-      this.editorOnChange?.(platforms);
     } else if (this.game?.canvas) {
-      const hit = this.hitTestPlatform(pointer.x, pointer.y);
-      this.game.canvas.style.cursor = hit
-        ? (hit.type === 'move' ? 'grab' : 'ew-resize')
-        : 'default';
+      if (this.hitTestSceneryCorner(pointer.worldX, pointer.worldY)) {
+        this.game.canvas.style.cursor = 'nwse-resize';
+      } else if (this.hitTestSceneryBody(pointer.worldX, pointer.worldY) !== null) {
+        this.game.canvas.style.cursor = 'grab';
+      } else {
+        const hit = this.hitTestPlatform(pointer.worldX, pointer.worldY);
+        this.game.canvas.style.cursor = hit ? (hit.type === 'move' ? 'grab' : 'ew-resize') : 'default';
+      }
     }
   }
 
@@ -1710,13 +2067,45 @@ class DesertScene extends Phaser.Scene {
         this.editorGfx.fillCircle(s.x, s.y, 26);
       }
     }
+
+    const scenery = this.editorSceneryRef;
+    if (scenery) {
+      for (let i = 0; i < scenery.length; i++) {
+        const o = scenery[i];
+        const isSelected = this.editorInteraction === 'move' && this.selectedSceneryIndex === i;
+        const col = o.solid ? 0xff4444 : 0x44aaff;
+        if (isSelected) {
+          this.editorGfx.lineStyle(3, 0xffdd00, 1.0);
+          this.editorGfx.strokeRect(o.x - 2, o.y - 2, o.width + 4, o.height + 4);
+          // Corner handles
+          const R = 8;
+          this.editorGfx.fillStyle(0xffdd00, 1.0);
+          for (const [cx, cy] of [[o.x, o.y], [o.x + o.width, o.y], [o.x, o.y + o.height], [o.x + o.width, o.y + o.height]] as [number, number][]) {
+            this.editorGfx.fillRect(cx - R, cy - R, R * 2, R * 2);
+          }
+        } else {
+          this.editorGfx.lineStyle(2, col, 0.8);
+          this.editorGfx.strokeRect(o.x, o.y, o.width, o.height);
+        }
+        if (o.solid) {
+          this.editorGfx.fillStyle(col, 0.12);
+          this.editorGfx.fillRect(o.x, o.y, o.width, o.height);
+        }
+      }
+    }
   }
 
   public getSelectedIndex(): number | null { return this.selectedIndex; }
+  public getSelectedSceneryIndex(): number | null { return this.selectedSceneryIndex; }
 
   public clearSelection(): void {
     this.selectedIndex = null;
     if (this.editorPlatformsRef) this.updateEditorOverlay(this.editorPlatformsRef);
+  }
+
+  public clearScenerySelection(): void {
+    this.selectedSceneryIndex = null;
+    this.updateEditorOverlay(this.editorPlatformsRef ?? []);
   }
 
   public updateEditorPlatformsRef(platforms: PlatformDto[]): void {
@@ -1726,17 +2115,17 @@ class DesertScene extends Phaser.Scene {
   }
 
   private addDunes(): void {
-    const groundSurfaceY = GROUND_Y + 27;
-    const dunes = [
-      { x: 150, width: 300, height: 32, alpha: 0.25 },
-      { x: 530, width: 380, height: 26, alpha: 0.20 },
-      { x: 900, width: 260, height: 30, alpha: 0.22 }
-    ];
-
-    for (const dune of dunes) {
-      const shadow = this.add.ellipse(dune.x + 10, groundSurfaceY - dune.height * 0.25 + 6, dune.width, dune.height, 0x7a4820, dune.alpha * 0.55);
+    const groundSurfaceY = GROUND_Y;
+    const count = Math.max(3, Math.ceil(WORLD_WIDTH / 340));
+    for (let i = 0; i < count; i++) {
+      const frac = (i + 0.3 + (i % 2) * 0.4) / count;
+      const x = WORLD_WIDTH * frac;
+      const width = 200 + (i % 4) * 80;
+      const height = 24 + (i % 3) * 8;
+      const alpha = 0.18 + (i % 3) * 0.04;
+      const shadow = this.add.ellipse(x + 10, groundSurfaceY - height * 0.25 + 6, width, height, 0x7a4820, alpha * 0.55);
       shadow.setDepth(3);
-      const ridge = this.add.ellipse(dune.x, groundSurfaceY - dune.height * 0.25, dune.width, dune.height, 0xdaa55e, dune.alpha);
+      const ridge = this.add.ellipse(x, groundSurfaceY - height * 0.25, width, height, 0xdaa55e, alpha);
       ridge.setDepth(4);
     }
   }
@@ -1758,11 +2147,16 @@ class GameClient {
   private keysRight = false;
   private rulesSchema: TunableField[] = [];
   private pendingRulesUpdate = false;
-  private editorPlatforms: PlatformDto[] = [...DEFAULT_PLATFORMS];
+  private editorPlatforms: PlatformDto[] = makeDefaultPlatforms();
   private editorMonsterSpawns: MonsterSpawnDto[] = [];
   private editorOpen = false;
   private editorAddMode = false;
   private editorMonsterAddMode = false;
+  private editorObjAddMode = false;
+  private editorSceneryObjects: SceneryObjectDto[] = [];
+  private sceneryLibrary: SceneryLibraryEntry[] = [];
+  private selectedSceneryKey: string | null = null;
+  private debugHitboxes = false;
 
   private isHost(view: RoundView | null): boolean {
     if (!view || !this.selfId) {
@@ -1821,8 +2215,8 @@ class GameClient {
       scale: {
         mode: Phaser.Scale.FIT,
         autoCenter: Phaser.Scale.CENTER_BOTH,
-        width: WORLD_WIDTH,
-        height: WORLD_HEIGHT
+        width: VIEWPORT_WIDTH,
+        height: VIEWPORT_HEIGHT
       },
       scene: [this.scene]
     });
@@ -1854,31 +2248,100 @@ class GameClient {
 
     this.ui.editorSaveBtn.addEventListener("click", () => { void this.saveMap(); });
     this.ui.editorLoadBtn.addEventListener("click", () => { void this.loadMap(); });
-    document.getElementById("editor-open-btn")!.addEventListener("click", () => {
+    this.ui.preJoinEditorBtn.addEventListener("click", () => {
       this.editorOpen = true;
       this.refreshEditorState();
     });
-    document.getElementById("editor-close-btn")!.addEventListener("click", () => {
+    this.ui.editorZoomFitBtn.addEventListener("click", () => {
+      this.scene.setCameraZoomToFit();
+    });
+    this.ui.editorWorldApplyBtn.addEventListener("click", () => {
+      const w = parseFloat(this.ui.editorWorldWidthInput.value);
+      const h = parseFloat(this.ui.editorWorldHeightInput.value);
+      if (!isNaN(w) && !isNaN(h)) void this.applyWorldSize(w, h);
+    });
+    document.getElementById("debug-hitboxes-btn")?.addEventListener("click", () => {
+      this.debugHitboxes = !this.debugHitboxes;
+      this.scene.debugHitboxes = this.debugHitboxes;
+      document.getElementById("debug-hitboxes-btn")!.classList.toggle("active", this.debugHitboxes);
+    });
+    document.getElementById("editor-close-btn")?.addEventListener("click", () => {
       this.editorOpen = false;
       this.refreshEditorState();
     });
     this.ui.editorAddToggle.addEventListener("click", () => {
       this.editorAddMode = !this.editorAddMode;
-      if (this.editorAddMode) this.editorMonsterAddMode = false;
+      if (this.editorAddMode) { this.editorMonsterAddMode = false; this.editorObjAddMode = false; }
       this.ui.editorAddToggle.classList.toggle("active", this.editorAddMode);
       this.ui.editorMonsterAddToggle.classList.toggle("active", false);
+      this.ui.editorObjAddToggle.classList.toggle("active", false);
       this.refreshEditorState();
     });
 
     this.ui.editorMonsterAddToggle.addEventListener("click", () => {
       this.editorMonsterAddMode = !this.editorMonsterAddMode;
-      if (this.editorMonsterAddMode) this.editorAddMode = false;
+      if (this.editorMonsterAddMode) { this.editorAddMode = false; this.editorObjAddMode = false; }
       this.ui.editorMonsterAddToggle.classList.toggle("active", this.editorMonsterAddMode);
       this.ui.editorAddToggle.classList.toggle("active", false);
+      this.ui.editorObjAddToggle.classList.toggle("active", false);
       this.refreshEditorState();
     });
 
+    this.ui.editorObjAddToggle.addEventListener("click", () => {
+      this.editorObjAddMode = !this.editorObjAddMode;
+      if (this.editorObjAddMode) { this.editorAddMode = false; this.editorMonsterAddMode = false; }
+      this.ui.editorObjAddToggle.classList.toggle("active", this.editorObjAddMode);
+      this.ui.editorAddToggle.classList.toggle("active", false);
+      this.ui.editorMonsterAddToggle.classList.toggle("active", false);
+      this.refreshEditorState();
+    });
+
+    this.ui.editorObjSelect.addEventListener("change", () => {
+      this.selectedSceneryKey = this.ui.editorObjSelect.value || null;
+      this.refreshEditorState();
+    });
+
+    this.ui.editorObjNewBtn.addEventListener("click", () => {
+      this.ui.editorObjFileInput.value = "";
+      this.ui.editorObjFileInput.click();
+    });
+
+    this.ui.editorObjFileInput.addEventListener("change", () => {
+      const file = this.ui.editorObjFileInput.files?.[0];
+      if (!file) return;
+      void this.uploadScenerySprite(file);
+    });
+
     window.addEventListener("keydown", (event) => {
+      // Delete works in editor even before joining.
+      if (event.key === "Delete" && this.editorOpen && !this.editorAddMode && !this.editorMonsterAddMode && !this.editorObjAddMode && !(document.activeElement instanceof HTMLInputElement)) {
+        const sceneryIdx = this.scene.getSelectedSceneryIndex();
+        if (sceneryIdx !== null) {
+          this.editorSceneryObjects.splice(sceneryIdx, 1);
+          this.scene.clearScenerySelection();
+          void this.applyScenery();
+          event.preventDefault();
+          return;
+        }
+        const monsterIdx = this.scene.getSelectedMonsterIndex();
+        if (monsterIdx !== null) {
+          this.editorMonsterSpawns.splice(monsterIdx, 1);
+          this.scene.clearMonsterSelection();
+          void this.applyMonsterSpawns();
+          event.preventDefault();
+          return;
+        }
+        const idx = this.scene.getSelectedIndex();
+        if (idx !== null) {
+          this.editorPlatforms.splice(idx, 1);
+          this.scene.syncPlatforms(this.editorPlatforms);
+          this.scene.clearSelection();
+          void this.applyPlatforms();
+          event.preventDefault();
+          return;
+        }
+      }
+
       if (!this.selfId) {
         return;
       }
@@ -1937,24 +2400,7 @@ class GameClient {
           this.sendFireball();
           break;
         case "Delete":
-          if (this.editorOpen && !this.editorAddMode && !this.editorMonsterAddMode && !(document.activeElement instanceof HTMLInputElement)) {
-            const monsterIdx = this.scene.getSelectedMonsterIndex();
-            if (monsterIdx !== null) {
-              this.editorMonsterSpawns.splice(monsterIdx, 1);
-              this.scene.clearMonsterSelection();
-              void this.applyMonsterSpawns();
-              event.preventDefault();
-              break;
-            }
-            const idx = this.scene.getSelectedIndex();
-            if (idx !== null) {
-              this.editorPlatforms.splice(idx, 1);
-              this.scene.syncPlatforms(this.editorPlatforms);
-              this.scene.clearSelection();
-              void this.applyPlatforms();
-            }
-            event.preventDefault();
-          }
+          // Handled above (pre-join compatible).
           break;
         default:
           break;
@@ -1998,6 +2444,14 @@ class GameClient {
 
     this.connection.on("Joined", ({ selfId }: { selfId: string }) => {
       this.selfId = selfId;
+      this.scene.setLocalPlayerId(selfId);
+      // Close editor when joining (editor is pre-join only).
+      if (this.editorOpen) {
+        this.editorOpen = false;
+        this.editorAddMode = false;
+        this.editorMonsterAddMode = false;
+        this.refreshEditorState();
+      }
       this.keysLeft = false;
       this.keysRight = false;
       this.sendInput(0, false);
@@ -2017,6 +2471,16 @@ class GameClient {
       if (fbSpeed != null) FIREBALL_SPEED = fbSpeed.value;
       const playerSize = payload.fields.find(f => f.key === "PlayerSize");
       if (playerSize != null) PLAYER_SIZE = playerSize.value;
+      const collRadius = payload.fields.find(f => f.key === "PlayerCollisionRadius");
+      if (collRadius != null) PLAYER_COLLISION_RADIUS = collRadius.value;
+      const fbHit = payload.fields.find(f => f.key === "FireballHitRadius");
+      if (fbHit != null) FIREBALL_HIT_RADIUS = fbHit.value;
+      const mannaR = payload.fields.find(f => f.key === "MannaCollectRadius");
+      if (mannaR != null) MANNA_COLLECT_RADIUS = mannaR.value;
+      const worldW = payload.fields.find(f => f.key === "WorldWidthMultiplier");
+      if (worldW != null) this.ui.editorWorldWidthInput.value = String(worldW.value);
+      const worldH = payload.fields.find(f => f.key === "WorldHeightMultiplier");
+      if (worldH != null) this.ui.editorWorldHeightInput.value = String(worldH.value);
       this.buildTuningPanel();
       if (this.pendingRulesUpdate) {
         this.pendingRulesUpdate = false;
@@ -2040,6 +2504,11 @@ class GameClient {
     this.connection.on("MonsterSpawnsUpdated", (payload: { spawns: MonsterSpawnDto[] }) => {
       this.editorMonsterSpawns = payload.spawns;
       if (this.editorOpen) this.scene.updateEditorMonsterSpawnsRef(payload.spawns);
+    });
+
+    this.connection.on("SceneryObjectsUpdated", (payload: { objects: SceneryObjectDto[] }) => {
+      this.editorSceneryObjects = payload.objects;
+      this.scene.syncScenery(payload.objects);
     });
 
     this.connection.on("MapList", (payload: { names: string[] }) => {
@@ -2080,6 +2549,7 @@ class GameClient {
 
     this.connection.on("RoundStarted", ({ starterId }: { starterId: string }) => {
       this.pendingRoundAction = null;
+      if (this.selfId) this.scene.setLocalPlayerId(this.selfId);
       if (starterId === this.selfId) {
         this.setBanner("Round started", "The sea path is opening again.", "success", false);
       }
@@ -2088,6 +2558,7 @@ class GameClient {
 
     this.connection.on("RoundRestarted", ({ starterId }: { starterId: string }) => {
       this.pendingRoundAction = null;
+      if (this.selfId) this.scene.setLocalPlayerId(this.selfId);
       if (starterId === this.selfId) {
         this.setBanner("Round restarted", "The crossing has been reset.", "success", false);
       }
@@ -2235,7 +2706,18 @@ class GameClient {
 
   private handleSnapshot(snapshot: WorldSnapshot): void {
     const previous = this.lastSnapshot;
+    if (snapshot.worldWidth > 0 && snapshot.worldHeight > 0) {
+      updateWorldSize(snapshot.worldWidth, snapshot.worldHeight);
+      this.scene.updateCameraBounds();
+    }
     const view = deriveRoundView(snapshot, previous ?? undefined);
+    // Stop following when local player is dead (free-roam); restart on new round.
+    if (this.selfId) {
+      const selfPlayer = view.players.find(p => p.id === this.selfId);
+      if (selfPlayer && !selfPlayer.isAlive) {
+        this.scene.setLocalPlayerId(null);
+      }
+    }
     this.scene.syncRound(view, this.selfId, snapshot.fireballs ?? [], snapshot.monsters ?? []);
     this.updateRoundPanel(view);
     this.updateSpecialNotices(view);
@@ -2659,12 +3141,14 @@ class GameClient {
     }, 3000);
   }
 
-  private updateEditorPanelVisibility(view: RoundView | null): void {
-    const canEdit = !!this.selfId && this.isHost(view) && view?.status !== "active";
-    if (!canEdit && this.editorOpen) {
+  private updateEditorPanelVisibility(_view: RoundView | null): void {
+    // Editor is pre-join only — close it as soon as the player joins.
+    this.ui.preJoinEditorBtn.classList.toggle("hidden", !!this.selfId);
+    if (this.selfId && this.editorOpen) {
       this.editorOpen = false;
       this.editorAddMode = false;
       this.editorMonsterAddMode = false;
+      this.editorObjAddMode = false;
       this.refreshEditorState();
     }
   }
@@ -2673,19 +3157,93 @@ class GameClient {
     this.ui.editorOverlay.classList.toggle("hidden", !this.editorOpen);
     this.ui.editorAddToggle.classList.toggle("active", this.editorAddMode);
     this.ui.editorMonsterAddToggle.classList.toggle("active", this.editorMonsterAddMode);
+    this.ui.editorObjAddToggle.classList.toggle("active", this.editorObjAddMode);
     if (this.editorOpen) {
-      const mode = this.editorAddMode ? 'add' : this.editorMonsterAddMode ? 'add-monster' : 'move';
+      // Fetch current state from server when opening pre-join.
+      if (!this.selfId && this.connection?.state === HubConnectionState.Connected) {
+        void this.connection.send("GetRules");
+        void this.loadSceneryLibrary();
+      }
+      const mode = this.editorAddMode ? 'add' : this.editorMonsterAddMode ? 'add-monster' : this.editorObjAddMode ? 'add-object' : 'move';
+      const libEntry = this.selectedSceneryKey
+        ? (this.sceneryLibrary.find(e => e.key === this.selectedSceneryKey) ?? null)
+        : null;
       this.scene.setEditorInteraction(
         mode,
         this.editorPlatforms,
         this.editorMonsterSpawns,
+        this.editorSceneryObjects,
+        libEntry,
         (platforms) => { this.editorPlatforms = platforms; },
         (spawns) => { this.editorMonsterSpawns = spawns; },
+        (objects) => { this.editorSceneryObjects = objects; void this.applyScenery(); },
         () => { void this.applyPlatforms(); void this.applyMonsterSpawns(); }
       );
     } else {
-      this.scene.setEditorInteraction(null, null, null, null, null);
+      this.scene.setEditorInteraction(null, null, null, null, null, null, null, null);
+      this.scene.resetCameraZoom();
     }
+  }
+
+  private async loadSceneryLibrary(): Promise<void> {
+    try {
+      const res = await fetch("/api/scenery/list");
+      if (!res.ok) return;
+      const entries: SceneryLibraryEntry[] = await res.json() as SceneryLibraryEntry[];
+      this.sceneryLibrary = entries;
+      this.populateSceneryDropdown();
+    } catch { /* silent */ }
+  }
+
+  private populateSceneryDropdown(): void {
+    this.ui.editorObjSelect.replaceChildren();
+    const def = document.createElement("option");
+    def.value = "";
+    def.textContent = "Select sprite…";
+    this.ui.editorObjSelect.append(def);
+    for (const entry of this.sceneryLibrary) {
+      const opt = document.createElement("option");
+      opt.value = entry.key;
+      opt.textContent = entry.key.replace(/\.png$/i, "");
+      this.ui.editorObjSelect.append(opt);
+    }
+    if (this.selectedSceneryKey) {
+      this.ui.editorObjSelect.value = this.selectedSceneryKey;
+    }
+  }
+
+  private async uploadScenerySprite(file: File): Promise<void> {
+    const defaultName = file.name.replace(/\.png$/i, "");
+    const rawName = prompt("Name for this object:", defaultName);
+    if (rawName === null) return;
+    const safeName = rawName.trim().replace(/[^a-zA-Z0-9_\-]/g, "_") || defaultName;
+    const finalFilename = `${safeName}.png`;
+    const renamedFile = new File([file], finalFilename, { type: "image/png" });
+    const solid = confirm(`Is "${safeName}" a solid object that blocks players?`);
+    const form = new FormData();
+    form.append("file", renamedFile);
+    form.append("solid", solid ? "true" : "false");
+    try {
+      const res = await fetch("/api/scenery/upload", { method: "POST", body: form });
+      if (!res.ok) { this.showEditorNotice("Upload failed.", "danger"); return; }
+      const entry = await res.json() as SceneryLibraryEntry;
+      if (!this.sceneryLibrary.find(e => e.key === entry.key)) {
+        this.sceneryLibrary.push(entry);
+      }
+      this.selectedSceneryKey = entry.key;
+      this.populateSceneryDropdown();
+      this.refreshEditorState();
+      this.showEditorNotice(`Saved "${safeName}".`, "success");
+    } catch {
+      this.showEditorNotice("Upload failed.", "danger");
+    }
+  }
+
+  private async applyWorldSize(widthMultiplier: number, heightMultiplier: number): Promise<void> {
+    if (!this.connection || this.connection.state !== HubConnectionState.Connected) return;
+    try {
+      await this.connection.send("UpdateRules", { updates: { WorldWidthMultiplier: widthMultiplier, WorldHeightMultiplier: heightMultiplier } });
+    } catch { /* silent */ }
   }
 
   private async applyPlatforms(): Promise<void> {
@@ -2702,12 +3260,19 @@ class GameClient {
     } catch { /* silent — live apply is best-effort */ }
   }
 
+  private async applyScenery(): Promise<void> {
+    if (!this.connection || this.connection.state !== HubConnectionState.Connected) return;
+    try {
+      await this.connection.send("ApplyScenery", { objects: this.editorSceneryObjects });
+    } catch { /* silent — live apply is best-effort */ }
+  }
+
   private async saveMap(): Promise<void> {
     if (!this.connection || this.connection.state !== HubConnectionState.Connected) return;
     const name = this.ui.editorMapName.value.trim();
     if (!name) { this.showEditorNotice("Enter a map name.", "danger"); return; }
     try {
-      await this.connection.send("SaveMap", { name, platforms: this.editorPlatforms });
+      await this.connection.send("SaveMap", { name, platforms: this.editorPlatforms, sceneryObjects: this.editorSceneryObjects });
       this.showEditorNotice("Map saved.", "success");
     } catch {
       this.showEditorNotice("Save failed.", "danger");
@@ -2781,9 +3346,12 @@ function renderShell(): UiRefs {
           <div class="tuning-footer">
             <div class="tuning-notice hidden" id="tuning-notice"></div>
             <button class="tuning-apply" id="tuning-apply" type="button">Apply</button>
-            <button class="tuning-apply editor-open-btn" id="editor-open-btn" type="button">Level Editor</button>
+            <button class="tuning-apply debug-hitboxes-btn" id="debug-hitboxes-btn" type="button">Debug Hitboxes</button>
           </div>
         </section>
+        <div class="pre-join-editor-row" id="pre-join-editor-row">
+          <button class="editor-open-btn" id="pre-join-editor-btn" type="button">Level Editor</button>
+        </div>
       </aside>
       <div class="editor-overlay hidden" id="editor-overlay">
         <div class="editor-overlay-head">
@@ -2792,6 +3360,20 @@ function renderShell(): UiRefs {
         </div>
         <button class="editor-toggle-btn" id="editor-add-toggle" type="button">＋ Add Platform</button>
         <button class="editor-toggle-btn" id="editor-monster-add-toggle" type="button">＋ Add Monster</button>
+        <button class="editor-toggle-btn" id="editor-zoom-fit-btn" type="button">⊞ Zoom to Fit</button>
+        <button class="editor-toggle-btn" id="editor-obj-add-toggle" type="button">＋ Place Object</button>
+        <div class="editor-map-bar">
+          <select id="editor-obj-select" style="flex:1"><option value="">Select sprite…</option></select>
+          <button id="editor-obj-new-btn" type="button">+ New</button>
+          <input id="editor-obj-file-input" type="file" accept=".png" style="display:none" />
+        </div>
+        <div class="editor-map-bar">
+          <label>W×</label>
+          <input id="editor-world-width" type="number" min="1" max="10" step="0.5" value="3" />
+          <label>H×</label>
+          <input id="editor-world-height" type="number" min="1" max="10" step="0.5" value="3" />
+          <button id="editor-world-apply-btn" type="button">Apply</button>
+        </div>
         <div class="editor-map-bar">
           <input id="editor-map-name" placeholder="Map name" maxlength="40" />
           <button id="editor-save-btn" type="button">Save</button>
@@ -2848,10 +3430,19 @@ function renderShell(): UiRefs {
     editorSaveBtn: document.querySelector<HTMLButtonElement>("#editor-save-btn")!,
     editorLoadSelect: document.querySelector<HTMLSelectElement>("#editor-load-select")!,
     editorLoadBtn: document.querySelector<HTMLButtonElement>("#editor-load-btn")!,
-    editorNotice: document.querySelector<HTMLDivElement>("#editor-notice")!
+    editorNotice: document.querySelector<HTMLDivElement>("#editor-notice")!,
+    editorZoomFitBtn: document.querySelector<HTMLButtonElement>("#editor-zoom-fit-btn")!,
+    editorWorldWidthInput: document.querySelector<HTMLInputElement>("#editor-world-width")!,
+    editorWorldHeightInput: document.querySelector<HTMLInputElement>("#editor-world-height")!,
+    editorWorldApplyBtn: document.querySelector<HTMLButtonElement>("#editor-world-apply-btn")!,
+    preJoinEditorBtn: document.querySelector<HTMLButtonElement>("#pre-join-editor-btn")!,
+    editorObjAddToggle: document.querySelector<HTMLButtonElement>("#editor-obj-add-toggle")!,
+    editorObjSelect: document.querySelector<HTMLSelectElement>("#editor-obj-select")!,
+    editorObjNewBtn: document.querySelector<HTMLButtonElement>("#editor-obj-new-btn")!,
+    editorObjFileInput: document.querySelector<HTMLInputElement>("#editor-obj-file-input")!
   };
 
-  if (!ui.layout || !ui.sidebar || !ui.stage || !ui.gameRoot || !ui.banner || !ui.waveWarning || !ui.waveNotice || !ui.cloudNotice || !ui.mannaNotice || !ui.roundState || !ui.roundDetail || !ui.roundAction || !ui.joinPanel || !ui.joinButton || !ui.nameInput || !ui.playerList || !ui.playerCount || !ui.statusText || !ui.roomBadge || !ui.connectionBadge || !ui.tuningPanel || !ui.tuningFields || !ui.tuningApply || !ui.tuningNotice || !ui.editorOverlay || !ui.editorAddToggle || !ui.editorMonsterAddToggle || !ui.editorMapName || !ui.editorSaveBtn || !ui.editorLoadSelect || !ui.editorLoadBtn || !ui.editorNotice) {
+  if (!ui.layout || !ui.sidebar || !ui.stage || !ui.gameRoot || !ui.banner || !ui.waveWarning || !ui.waveNotice || !ui.cloudNotice || !ui.mannaNotice || !ui.roundState || !ui.roundDetail || !ui.roundAction || !ui.joinPanel || !ui.joinButton || !ui.nameInput || !ui.playerList || !ui.playerCount || !ui.statusText || !ui.roomBadge || !ui.connectionBadge || !ui.tuningPanel || !ui.tuningFields || !ui.tuningApply || !ui.tuningNotice || !ui.editorOverlay || !ui.editorAddToggle || !ui.editorMonsterAddToggle || !ui.editorMapName || !ui.editorSaveBtn || !ui.editorLoadSelect || !ui.editorLoadBtn || !ui.editorNotice || !ui.editorZoomFitBtn || !ui.editorWorldWidthInput || !ui.editorWorldHeightInput || !ui.editorWorldApplyBtn || !ui.preJoinEditorBtn || !ui.editorObjAddToggle || !ui.editorObjSelect || !ui.editorObjNewBtn || !ui.editorObjFileInput) {
     throw new Error("UI bootstrap failed.");
   }
 

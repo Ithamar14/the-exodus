@@ -588,11 +588,26 @@ body::after {
 
 .editor-open-btn:hover { background: rgba(15, 120, 103, 0.15); }
 
+.debug-hitboxes-btn {
+  margin-top: 0.4rem;
+  color: #c0392b;
+  border-color: rgba(192, 57, 43, 0.35);
+  background: rgba(192, 57, 43, 0.07);
+}
+.debug-hitboxes-btn:hover { background: rgba(192, 57, 43, 0.15); }
+.debug-hitboxes-btn.active {
+  background: rgba(192, 57, 43, 0.75);
+  color: #fff;
+  border-color: #c0392b;
+}
+
 .editor-overlay {
   position: fixed;
   top: 16px;
   right: 16px;
-  width: 220px;
+  width: 260px;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
   background: var(--paper);
   border: 1.5px solid rgba(122, 83, 39, 0.22);
   border-radius: 14px;

@@ -72,13 +72,13 @@ public sealed class GameWorldTests
             });
 
         Assert.True(world.TryAddPlayer("conn-1", "Ada").Success);
-        Assert.True(world.TrySetTarget("conn-1", -100f, GameWorld.WorldHeight + 50f));
+        Assert.True(world.TrySetTarget("conn-1", -100f, world.WorldHeight + 50f));
 
         var snapshot = world.TickAndSnapshot(0.05f);
         var player = Assert.Single(snapshot.Players);
 
         Assert.Equal(0f, player.TargetX);
-        Assert.Equal(GameWorld.WorldHeight, player.TargetY);
+        Assert.Equal(world.WorldHeight, player.TargetY);
     }
 
     [Fact]
@@ -107,8 +107,8 @@ public sealed class GameWorldTests
         Assert.True(first.Hazard.Wave.IsActive);
         Assert.Equal("left", first.Hazard.Wave.Side);
         Assert.Equal("y", first.Hazard.Wave.GapAxis);
-        Assert.InRange(first.Hazard.Wave.GapStart ?? -1f, 0f, GameWorld.WorldHeight);
-        Assert.InRange(first.Hazard.Wave.GapEnd ?? -1f, 0f, GameWorld.WorldHeight);
+        Assert.InRange(first.Hazard.Wave.GapStart ?? -1f, 0f, world.WorldHeight);
+        Assert.InRange(first.Hazard.Wave.GapEnd ?? -1f, 0f, world.WorldHeight);
 
         var second = world.TickAndSnapshot(0.25f);
 
@@ -214,7 +214,7 @@ public sealed class GameWorldTests
         Assert.Equal("Active", before.Round.Phase);
         Assert.False(before.GameOver);
 
-        var moved = world.TrySetTarget("conn-1", GameWorld.WorldWidth - 50f, GameWorld.WorldHeight * 0.2f);
+        var moved = world.TrySetTarget("conn-1", world.WorldWidth - 50f, world.WorldHeight * 0.2f);
         Assert.True(moved);
 
         var after = world.TickAndSnapshot(0.1f);
@@ -247,7 +247,7 @@ public sealed class GameWorldTests
         Assert.Equal("WaitingToStart", waiting.Round.Phase);
 
         var before = Assert.Single(waiting.Players);
-        var moved = world.TrySetTarget("conn-1", GameWorld.WorldWidth - 40f, GameWorld.WorldHeight * 0.25f);
+        var moved = world.TrySetTarget("conn-1", world.WorldWidth - 40f, world.WorldHeight * 0.25f);
         Assert.True(moved);
 
         var after = world.TickAndSnapshot(0.1f);
@@ -256,7 +256,7 @@ public sealed class GameWorldTests
         Assert.Equal("WaitingToStart", after.Round.Phase);
         Assert.False(after.GameOver);
         Assert.True(player.X > before.X);
-        Assert.InRange(player.TargetX, (GameWorld.WorldWidth - 40f) - 0.01f, (GameWorld.WorldWidth - 40f) + 0.01f);
+        Assert.InRange(player.TargetX, (world.WorldWidth - 40f) - 0.01f, (world.WorldWidth - 40f) + 0.01f);
         Assert.True(player.IsAlive);
     }
 
@@ -304,7 +304,7 @@ public sealed class GameWorldTests
             "#2a9d8f",
             "#8d6cab",
             "#f4a261",
-            "#4ecdc4"
+            "#29d1c5"
         };
 
         Assert.Equal(firstPlayers.Select(player => player.Color), secondPlayers.Select(player => player.Color));
@@ -341,8 +341,8 @@ public sealed class GameWorldTests
 
         var snapshot = world.TickAndSnapshot(0.05f);
         Assert.True(snapshot.Hazard.Cloud.IsActive);
-        Assert.Equal(GameWorld.WorldWidth * 0.5f, snapshot.Hazard.Cloud.X ?? -1f, 3);
-        Assert.Equal(GameWorld.WorldHeight * 0.5f, snapshot.Hazard.Cloud.Y ?? -1f, 3);
+        Assert.Equal(world.WorldWidth * 0.5f, snapshot.Hazard.Cloud.X ?? -1f, 3);
+        Assert.Equal(world.WorldHeight * 0.5f, snapshot.Hazard.Cloud.Y ?? -1f, 3);
         Assert.Equal(120f, snapshot.Hazard.Cloud.Radius ?? -1f, 3);
         Assert.InRange(snapshot.Hazard.Cloud.SecondsUntilResolve ?? -1f, 0.19f, 0.21f);
         Assert.Contains(snapshot.Events, eventSnapshot => eventSnapshot.Type == "cloud_spawned");
@@ -378,13 +378,13 @@ public sealed class GameWorldTests
 
         Assert.All(snapshot.Manna.Pickups, pickup =>
         {
-            Assert.InRange(pickup.X, 0f, GameWorld.WorldWidth);
-            Assert.InRange(pickup.Y, GameWorld.GroundY - 165f, GameWorld.GroundY + 1f);
+            Assert.InRange(pickup.X, 0f, world.WorldWidth);
+            Assert.InRange(pickup.Y, world.GroundSurfaceY - 165f, world.GroundSurfaceY + 1f);
         });
 
         var xSpread = snapshot.Manna.Pickups.Max(p => p.X) - snapshot.Manna.Pickups.Min(p => p.X);
         var ySpread = snapshot.Manna.Pickups.Max(p => p.Y) - snapshot.Manna.Pickups.Min(p => p.Y);
-        Assert.True(xSpread > (GameWorld.WorldWidth * 0.2f));
+        Assert.True(xSpread > (world.WorldWidth * 0.2f));
         Assert.True(ySpread > 50f); // platformer: manna spawns within jump range near ground
     }
 
@@ -402,7 +402,8 @@ public sealed class GameWorldTests
                 SpawnMarginFraction = 0f,
                 MannaPickupCount = 1,
                 MannaSpawnMarginFraction = 0f,
-                MannaRespawnDelaySeconds = 3f
+                MannaRespawnDelaySeconds = 3f,
+                LivesPerPlayer = 1
             });
 
         Assert.True(world.TryAddPlayer("conn-1", "Ada").Success);
@@ -490,7 +491,8 @@ public sealed class GameWorldTests
                 MoveSpeed = 4000f,
                 SpawnMarginFraction = 0f,
                 MannaSpawnMarginFraction = 0.1f,
-                MannaRespawnDelaySeconds = 2f
+                MannaRespawnDelaySeconds = 2f,
+                LivesPerPlayer = 1
             });
 
         Assert.True(world.TryAddPlayer("conn-1", "Ada").Success);
@@ -552,7 +554,8 @@ public sealed class GameWorldTests
                 CloudCenterMinFractionX = 0.5f,
                 CloudCenterMaxFractionX = 0.5f,
                 CloudCenterMinFractionY = 0.5f,
-                CloudCenterMaxFractionY = 0.5f
+                CloudCenterMaxFractionY = 0.5f,
+                LivesPerPlayer = 1
             });
 
         var ada = world.TryAddPlayer("conn-1", "Ada");
@@ -825,7 +828,8 @@ public sealed class GameWorldTests
                 WaveTravelSeconds = 1f,
                 MoveSpeed = 4000f,
                 SpawnMarginFraction = 0f,
-                MannaPickupCount = 1
+                MannaPickupCount = 1,
+                LivesPerPlayer = 1
             });
 
         var one = world.TryAddPlayer("conn-1", "One");
@@ -860,7 +864,8 @@ public sealed class GameWorldTests
                 WaveCooldownSeconds = 0.05f,
                 WaveTravelSeconds = 1f,
                 MoveSpeed = 0f,
-                SpawnMarginFraction = 0f
+                SpawnMarginFraction = 0f,
+                LivesPerPlayer = 1
             });
 
         var ada = world.TryAddPlayer("conn-1", "Ada");
@@ -928,7 +933,8 @@ public sealed class GameWorldTests
                 WaveCooldownSeconds = 0.05f,
                 WaveTravelSeconds = 1f,
                 MoveSpeed = 0f,
-                SpawnMarginFraction = 0f
+                SpawnMarginFraction = 0f,
+                LivesPerPlayer = 1
             });
 
         Assert.True(world.TryAddPlayer("conn-1", "Ada").Success);
@@ -989,7 +995,8 @@ public sealed class GameWorldTests
                 WaveTravelSeconds = 1f,
                 MoveSpeed = 4000f,
                 SpawnMarginFraction = 0f,
-                MannaPickupCount = 1
+                MannaPickupCount = 1,
+                LivesPerPlayer = 1
             });
 
         var starter = world.TryAddPlayer("conn-1", "Starter");
@@ -1029,7 +1036,8 @@ public sealed class GameWorldTests
                 WaveTravelSeconds = 1f,
                 MoveSpeed = 4000f,
                 SpawnMarginFraction = 0f,
-                MannaPickupCount = 1
+                MannaPickupCount = 1,
+                LivesPerPlayer = 1
             });
 
         var starter = world.TryAddPlayer("conn-1", "Starter");
@@ -1056,8 +1064,8 @@ public sealed class GameWorldTests
             Assert.True(beforeRestart.TryGetValue(player.Id, out var previous));
             Assert.NotEqual(previous.X, player.X);
             Assert.NotEqual(previous.Y, player.Y);
-            Assert.InRange(player.X, 0f, GameWorld.WorldWidth);
-            Assert.InRange(player.Y, 0f, GameWorld.WorldHeight);
+            Assert.InRange(player.X, 0f, world.WorldWidth);
+            Assert.InRange(player.Y, 0f, world.WorldHeight);
         }
     }
 
@@ -1097,9 +1105,9 @@ public sealed class GameWorldTests
     [Fact]
     public void PhysicsPlayerFallsAndLandsAtGround()
     {
-        // Spawn high up; gravity should settle player at GroundY
+        // Spawn high up at X≈375 (gap between left-mid and center-low platforms) so player falls to ground.
         var world = CreateWorld(
-            singles: [0.5f, 0.1f], // X=512, Y≈77
+            singles: [375f / GameWorld.WorldWidthBase, 0.1f],
             rules: new GameRules { WaveCooldownSeconds = 999f, WaveTravelSeconds = 1f, SpawnMarginFraction = 0f });
 
         world.TryAddPlayer("conn-1", "Ada");
@@ -1109,17 +1117,17 @@ public sealed class GameWorldTests
         var snapshot = Tick(world, 50, 0.05f); // 2.5 s — enough to fall from anywhere
         var player = Assert.Single(snapshot.Players);
 
-        Assert.InRange(player.Y, GameWorld.GroundY - 0.5f, GameWorld.GroundY + 0.5f);
+        Assert.InRange(player.Y, world.GroundSurfaceY - 0.5f, world.GroundSurfaceY + 0.5f);
     }
 
     [Fact]
     public void PhysicsPlayerLandsOnPlatformFromAbove()
     {
-        // Spawn directly above the left-low platform (cx=150, surfaceY=597, width=200).
-        // At X=150 no other platform is in range, so the player must land at Y=570 (surfaceY-27).
+        // Spawn directly above the left-low platform (cx≈150, surfaceY≈597 in 1× world).
+        // Use WorldWidthMultiplier=1 / WorldHeightMultiplier=1 to keep original pixel coords.
         var world = CreateWorld(
-            singles: [150f / GameWorld.WorldWidth, 200f / GameWorld.WorldHeight],
-            rules: new GameRules { WaveCooldownSeconds = 999f, WaveTravelSeconds = 1f, SpawnMarginFraction = 0f });
+            singles: [150f / GameWorld.WorldWidthBase, 200f / GameWorld.WorldHeightBase],
+            rules: new GameRules { WaveCooldownSeconds = 999f, WaveTravelSeconds = 1f, SpawnMarginFraction = 0f, WorldWidthMultiplier = 1f, WorldHeightMultiplier = 1f });
 
         world.TryAddPlayer("conn-1", "Ada");
         world.TrySetInput("conn-1", 0, false);
@@ -1128,18 +1136,18 @@ public sealed class GameWorldTests
         var snapshot = Tick(world, 40, 0.05f);
         var player = Assert.Single(snapshot.Players);
 
-        Assert.InRange(player.Y, 569f, 571f); // left-low landing Y = 597 - 27 = 570
+        Assert.InRange(player.Y, 596f, 598f); // left-low landing Y = 597 (feet at surfaceY)
     }
 
     [Fact]
     public void PhysicsJumpFromGroundLandsOnPlatform()
     {
-        // Spawn on ground at X=150 (left-low platform range), jump, expect to land on the platform.
-        // Jump apex ≈ Y=492 (feet≈519), which clears the platform surface at Y=597, so the player
-        // lands there on the way down rather than falling all the way back to the ground.
+        // Spawn on ground at X≈150 (left-low platform range), jump, expect to land on the platform.
+        // Jump apex clears platform surface at Y≈597 (1× world), so the player lands there on the way down.
+        const float groundSurfaceY1x = GameWorld.WorldHeightBase - 61f;
         var world = CreateWorld(
-            singles: [150f / GameWorld.WorldWidth, GameWorld.GroundY / GameWorld.WorldHeight],
-            rules: new GameRules { WaveCooldownSeconds = 999f, WaveTravelSeconds = 1f, SpawnMarginFraction = 0f });
+            singles: [150f / GameWorld.WorldWidthBase, groundSurfaceY1x / GameWorld.WorldHeightBase],
+            rules: new GameRules { WaveCooldownSeconds = 999f, WaveTravelSeconds = 1f, SpawnMarginFraction = 0f, WorldWidthMultiplier = 1f, WorldHeightMultiplier = 1f });
 
         world.TryAddPlayer("conn-1", "Ada");
         world.TrySetInput("conn-1", 0, false);
@@ -1151,11 +1159,14 @@ public sealed class GameWorldTests
         var snapshot = Tick(world, 25, 0.05f);          // arc plays out; landing at ~tick 21
 
         var player = Assert.Single(snapshot.Players);
-        Assert.InRange(player.Y, 569f, 571f);          // left-low landing Y = 570
+        Assert.InRange(player.Y, 596f, 598f);          // left-low landing Y = 597 (feet at surfaceY)
     }
 
     private static GameWorld CreateWorld(IEnumerable<float> singles, IEnumerable<int>? ints = null, GameRules? rules = null)
     {
+        // Tests always run in a 1× world so that coordinate-based assertions remain valid.
+        // The production default is 3×; tests should not depend on that default.
+        rules = (rules ?? new GameRules()) with { WorldWidthMultiplier = 1f, WorldHeightMultiplier = 1f };
         return new GameWorld(new ScriptedGameRandom(singles, ints), rules);
     }
 

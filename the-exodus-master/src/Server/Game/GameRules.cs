@@ -95,6 +95,13 @@ public sealed record GameRules
     [Tunable("Cloud Max Y", "Cloud", 0.51f, 1f, 0.01f)]
     public float CloudCenterMaxFractionY { get; init; } = 0.78f;
 
+    // ── World ─────────────────────────────────────────────────────────────
+    [Tunable("Width Multiplier", "World", 1f, 10f, 0.5f)]
+    public float WorldWidthMultiplier { get; init; } = 3f;
+
+    [Tunable("Height Multiplier", "World", 1f, 10f, 0.5f)]
+    public float WorldHeightMultiplier { get; init; } = 3f;
+
     // ── Manna ─────────────────────────────────────────────────────────────
     [Tunable("Pickup Count", "Manna", 1f, 20f, 1f)]
     public int MannaPickupCount { get; init; } = 5;

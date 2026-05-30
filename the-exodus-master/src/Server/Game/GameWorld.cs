@@ -7,23 +7,33 @@ namespace Server.Game;
 public sealed class GameWorld
 {
     public const int MaxPlayers = 6;
-    public const float WorldWidth = 1024f;
-    public const float WorldHeight = 768f;
-    public const float GroundY = WorldHeight - 88f; // default ground Y at PlayerSize=1 (feet at 707)
-    private float PlayerHalfHeight => 27f * _rules.PlayerSize;
-    private float EffectiveGroundY => WorldHeight - 61f - PlayerHalfHeight;
+    public const float WorldWidthBase  = 1024f;
+    public const float WorldHeightBase = 768f;
 
-    // (centerX, surfaceY, width) — surfaceY is the top edge; player center when standing = surfaceY - PlayerHalfHeight
-    public static readonly (float CenterX, float SurfaceY, float Width)[] DefaultPlatforms =
+    public float WorldWidth  => WorldWidthBase  * _rules.WorldWidthMultiplier;
+    public float WorldHeight => WorldHeightBase * _rules.WorldHeightMultiplier;
+    public float GroundY         => WorldHeight - 88f;
+    public float GroundSurfaceY  => WorldHeight - 61f;
+
+    private float PlayerHalfHeight  => 27f * _rules.PlayerSize;
+    private float PlayerBodyHalfWidth => 10f * _rules.PlayerSize;
+    private float PlayerBodyHeight    => 54f * _rules.PlayerSize;
+    private float EffectiveGroundY => GroundSurfaceY;
+    private float EffectivePlayerCollisionRadius => _rules.PlayerCollisionRadius * _rules.PlayerSize;
+
+    // (centerX, surfaceY, width) — scaled proportionally to the effective world size.
+    // Fractions from the original 1024×768 layout, multiplied by current WorldWidth/Height.
+    public (float CenterX, float SurfaceY, float Width)[] DefaultPlatforms =>
     [
-        (150f,  597f, 200f),   // left low
-        (512f,  587f, 180f),   // center low
-        (850f,  597f, 200f),   // right low
-        (280f,  447f, 140f),   // left mid
-        (730f,  457f, 140f),   // right mid
-        (512f,  337f, 120f),   // top center
+        (WorldWidth * 0.146f, WorldHeight * 0.778f, WorldWidth * 0.195f),   // left low
+        (WorldWidth * 0.500f, WorldHeight * 0.765f, WorldWidth * 0.176f),   // center low
+        (WorldWidth * 0.830f, WorldHeight * 0.778f, WorldWidth * 0.195f),   // right low
+        (WorldWidth * 0.273f, WorldHeight * 0.583f, WorldWidth * 0.137f),   // left mid
+        (WorldWidth * 0.713f, WorldHeight * 0.596f, WorldWidth * 0.137f),   // right mid
+        (WorldWidth * 0.500f, WorldHeight * 0.439f, WorldWidth * 0.117f),   // top center
     ];
-    private (float CenterX, float SurfaceY, float Width)[] _platforms = DefaultPlatforms;
+    private (float CenterX, float SurfaceY, float Width)[] _platforms = [];
+    private SceneryObjectDto[] _sceneryObjects = [];
     private static readonly HashSet<string> AllowedEmotes = new(StringComparer.OrdinalIgnoreCase)
     {
         "dove",
@@ -85,17 +95,21 @@ public sealed class GameWorld
     private const float MonsterPauseMin      = 0.5f;
     private const float MonsterPauseMax      = 2.2f;
     private const float MonsterContactRadius = 38f;
-    private float EffectiveMonsterGroundY => WorldHeight - 61f - MonsterHalfHeight;
+    private float EffectiveMonsterGroundY => GroundSurfaceY;
+
+    private readonly string _mapsDirectory;
 
     public GameWorld()
-        : this(new SystemGameRandom(), GameRules.Default)
+        : this(new SystemGameRandom(), GameRules.Default, null)
     {
     }
 
-    public GameWorld(IGameRandom random, GameRules? rules = null)
+    public GameWorld(IGameRandom random, GameRules? rules = null, string? mapsDirectory = null)
     {
         _random = random;
         _rules = rules ?? GameRules.Default;
+        _mapsDirectory = mapsDirectory ?? "maps";
+        _platforms = DefaultPlatforms;
         ResetAvailablePlayerColors();
         ResetRoundMechanics();
     }
@@ -215,7 +229,7 @@ public sealed class GameWorld
                 $"fb-{_nextFireballId++}",
                 player.Id,
                 player.X + 24f * player.FacingDir,
-                player.Y - 9f,
+                player.Y - PlayerHalfHeight - 9f,
                 player.FacingDir));
         }
     }
@@ -499,7 +513,7 @@ public sealed class GameWorld
                 p.IsAlive &&
                 p.InvincibilityRemaining <= 0f &&
                 p.Id != fb.OwnerId &&
-                IsWithinRadius(fb.X, fb.Y, p.X, p.Y, hitRadius));
+                IsWithinRadius(fb.X, fb.Y, p.X, p.Y - PlayerHalfHeight, hitRadius));
 
             if (hit is not null)
             {
@@ -535,11 +549,11 @@ public sealed class GameWorld
 
         player.JumpRequested = false;
 
-        var prevFeetY = player.Y + PlayerHalfHeight;
+        var prevFeetY = player.Y;
         player.X += player.VelocityX * deltaSeconds;
         player.Y += player.VelocityY * deltaSeconds;
         player.X = Math.Clamp(player.X, 0f, WorldWidth);
-        var newFeetY = player.Y + PlayerHalfHeight;
+        var newFeetY = player.Y;
 
         if (player.Y >= EffectiveGroundY)
         {
@@ -558,7 +572,7 @@ public sealed class GameWorld
                 {
                     if (prevFeetY > surfaceY || newFeetY < surfaceY) continue;
                     if (player.X < cx - width * 0.5f || player.X > cx + width * 0.5f) continue;
-                    player.Y = surfaceY - PlayerHalfHeight;
+                    player.Y = surfaceY;
                     player.VelocityY = 0f;
                     player.IsGrounded = true;
                     break;
@@ -567,6 +581,7 @@ public sealed class GameWorld
         }
 
         player.IsMoving = Math.Abs(player.VelocityX) > 0.1f || !player.IsGrounded;
+        ResolveSceneryCollisionPlayer(player);
     }
 
     private void MovePlayerTarget(PlayerState player, float deltaSeconds)
@@ -605,13 +620,13 @@ public sealed class GameWorld
                 var b = alivePlayers[j];
                 var delta = new Vector2(b.X - a.X, b.Y - a.Y);
                 var distance = delta.Length();
-                if (distance > _rules.PlayerCollisionRadius || distance < 0.001f)
+                if (distance > EffectivePlayerCollisionRadius || distance < 0.001f)
                 {
                     continue;
                 }
 
                 var normal = Vector2.Normalize(delta);
-                var overlap = Math.Max(0f, _rules.PlayerCollisionRadius - distance);
+                var overlap = Math.Max(0f, EffectivePlayerCollisionRadius - distance);
                 var separation = Math.Max(overlap + _rules.CollisionBumpDistance, _rules.CollisionLaunchDistance);
                 var impulse = normal * (separation * 0.5f);
                 a.X -= impulse.X;
@@ -915,7 +930,7 @@ public sealed class GameWorld
         var crossed = wave.Side switch
         {
             HazardEdge.Left or HazardEdge.Right => IsBetween(player.X, previous, current),
-            HazardEdge.Top or HazardEdge.Bottom => IsBetween(player.Y, previous, current),
+            HazardEdge.Top or HazardEdge.Bottom => IsBetween(player.Y - PlayerHalfHeight, previous, current),
             _ => false
         };
 
@@ -926,7 +941,7 @@ public sealed class GameWorld
 
         return wave.Side switch
         {
-            HazardEdge.Left or HazardEdge.Right => !IsBetween(player.Y, wave.GapStart, wave.GapEnd),
+            HazardEdge.Left or HazardEdge.Right => !IsBetween(player.Y - PlayerHalfHeight, wave.GapStart, wave.GapEnd),
             HazardEdge.Top or HazardEdge.Bottom => !IsBetween(player.X, wave.GapStart, wave.GapEnd),
             _ => false
         };
@@ -1015,7 +1030,9 @@ public sealed class GameWorld
             _winnerPlayerId,
             _winnerPlayerId is not null,
             _fireballs.Select(fb => new FireballSnapshot(fb.Id, fb.OwnerId, fb.X, fb.Y, fb.DirX)).ToArray(),
-            _monsters.Select(m => new MonsterSnapshot(m.Id, m.X, m.Y, m.FacingDir, m.Hp, m.IsPaused)).ToArray());
+            _monsters.Select(m => new MonsterSnapshot(m.Id, m.X, m.Y, m.FacingDir, m.Hp, m.IsPaused)).ToArray(),
+            WorldWidth,
+            WorldHeight);
     }
 
     private MannaSnapshot BuildMannaSnapshot()
@@ -1279,11 +1296,11 @@ public sealed class GameWorld
 
     private void ApplyMonsterPhysics(MonsterState monster, float deltaSeconds)
     {
-        var prevFeetY = monster.Y + MonsterHalfHeight;
+        var prevFeetY = monster.Y;
         monster.X += monster.VelocityX * deltaSeconds;
         monster.Y += monster.VelocityY * deltaSeconds;
         monster.X = Math.Clamp(monster.X, MonsterHalfWidth, WorldWidth - MonsterHalfWidth);
-        var newFeetY = monster.Y + MonsterHalfHeight;
+        var newFeetY = monster.Y;
 
         if (monster.Y >= EffectiveMonsterGroundY)
         {
@@ -1300,13 +1317,14 @@ public sealed class GameWorld
                 {
                     if (prevFeetY > surfaceY || newFeetY < surfaceY) continue;
                     if (monster.X < cx - width * 0.5f || monster.X > cx + width * 0.5f) continue;
-                    monster.Y = surfaceY - MonsterHalfHeight;
+                    monster.Y = surfaceY;
                     monster.VelocityY = 0f;
                     monster.IsGrounded = true;
                     break;
                 }
             }
         }
+        ResolveSceneryCollisionMonster(monster);
     }
 
     private bool HasGroundAheadForMonster(MonsterState monster, int direction)
@@ -1314,16 +1332,69 @@ public sealed class GameWorld
         var lookX = monster.X + direction * (MonsterHalfWidth + 4f);
         if (lookX < 0f || lookX > WorldWidth) return false;
 
-        var feetY = monster.Y + MonsterHalfHeight;
-
         if (monster.Y >= EffectiveMonsterGroundY - 2f) return true;
 
         foreach (var (cx, surfaceY, width) in _platforms)
         {
             if (lookX >= cx - width * 0.5f && lookX <= cx + width * 0.5f)
-                if (Math.Abs(surfaceY - feetY) < 3f) return true;
+                if (Math.Abs(surfaceY - monster.Y) < 3f) return true;
         }
         return false;
+    }
+
+    private void ResolveSceneryCollisionPlayer(PlayerState player)
+    {
+        var halfW = PlayerBodyHalfWidth;
+        var fullH = PlayerBodyHeight;
+        foreach (var obj in _sceneryObjects)
+        {
+            if (!obj.Solid) continue;
+            float pL = player.X - halfW, pR = player.X + halfW;
+            float pT = player.Y - fullH, pB = player.Y;
+            float rL = obj.X, rR = obj.X + obj.Width, rT = obj.Y, rB = obj.Y + obj.Height;
+            if (pR <= rL || pL >= rR || pB <= rT || pT >= rB) continue;
+            float ovL = pR - rL, ovR = rR - pL, ovT = pB - rT, ovB = rB - pT;
+            float resX = ovL < ovR ? -ovL : ovR;
+            float resY = ovT < ovB ? -ovT : ovB;
+            if (MathF.Abs(resX) <= MathF.Abs(resY))
+            {
+                player.X += resX;
+                player.VelocityX = 0f;
+            }
+            else
+            {
+                player.Y += resY;
+                player.VelocityY = 0f;
+                if (resY < 0f) player.IsGrounded = true;
+            }
+        }
+    }
+
+    private void ResolveSceneryCollisionMonster(MonsterState monster)
+    {
+        const float fullH = MonsterHalfHeight * 2f;
+        foreach (var obj in _sceneryObjects)
+        {
+            if (!obj.Solid) continue;
+            float pL = monster.X - MonsterHalfWidth, pR = monster.X + MonsterHalfWidth;
+            float pT = monster.Y - fullH, pB = monster.Y;
+            float rL = obj.X, rR = obj.X + obj.Width, rT = obj.Y, rB = obj.Y + obj.Height;
+            if (pR <= rL || pL >= rR || pB <= rT || pT >= rB) continue;
+            float ovL = pR - rL, ovR = rR - pL, ovT = pB - rT, ovB = rB - pT;
+            float resX = ovL < ovR ? -ovL : ovR;
+            float resY = ovT < ovB ? -ovT : ovB;
+            if (MathF.Abs(resX) <= MathF.Abs(resY))
+            {
+                monster.X += resX;
+                monster.VelocityX = 0f;
+            }
+            else
+            {
+                monster.Y += resY;
+                monster.VelocityY = 0f;
+                if (resY < 0f) monster.IsGrounded = true;
+            }
+        }
     }
 
     private void ResolveMonsterPlayerContact(ICollection<GameEventSnapshot> events)
@@ -1335,7 +1406,7 @@ public sealed class GameWorld
             foreach (var player in _playersByConnection.Values.OrderBy(p => p.JoinOrder))
             {
                 if (!player.IsAlive || player.InvincibilityRemaining > 0f) continue;
-                if (!IsWithinRadius(monster.X, monster.Y, player.X, player.Y, MonsterContactRadius)) continue;
+                if (!IsWithinRadius(monster.X, monster.Y - MonsterHalfHeight, player.X, player.Y - PlayerHalfHeight, MonsterContactRadius)) continue;
 
                 Kill(player, "monster", events);
             }
@@ -1370,14 +1441,20 @@ public sealed class GameWorld
         lock (_sync)
         {
             if (_phase == RoundPhase.Active) return (false, "round_active");
-            if (!TryGetPlayerByConnection(connectionId, out var player) || player.Id != _starterPlayerId)
-                return (false, "not_authorized");
+            if (!CanEdit(connectionId)) return (false, "not_authorized");
 
             _monsterSpawns.Clear();
             foreach (var s in spawns)
                 _monsterSpawns.Add(new MonsterSpawn(s.Id, s.X, s.Y));
         }
         return (true, null);
+    }
+
+    // Allow edits when no players are joined yet (pre-join editor) or when the caller is the host.
+    private bool CanEdit(string connectionId)
+    {
+        if (_playersByConnection.Count == 0) return true;
+        return TryGetPlayerByConnection(connectionId, out var p) && p.Id == _starterPlayerId;
     }
 
     private static bool IsWithinRadius(float x1, float y1, float x2, float y2, float radius)
@@ -1483,7 +1560,7 @@ public sealed class GameWorld
             if (_phase == RoundPhase.Active)
                 return (false, "round_active", null);
 
-            if (!TryGetPlayerByConnection(connectionId, out var player) || player.Id != _starterPlayerId)
+            if (!CanEdit(connectionId))
                 return (false, "not_authorized", null);
 
             newRules = ApplyRulesUpdates(_rules, updates);
@@ -1539,6 +1616,22 @@ public sealed class GameWorld
         }
     }
 
+    public IReadOnlyList<SceneryObjectDto> GetSceneryObjects()
+    {
+        lock (_sync) { return _sceneryObjects; }
+    }
+
+    public (bool Success, string? Reason) TryApplyScenery(string connectionId, List<SceneryObjectDto> objects)
+    {
+        lock (_sync)
+        {
+            if (_phase == RoundPhase.Active) return (false, "round_active");
+            if (!CanEdit(connectionId)) return (false, "not_authorized");
+            _sceneryObjects = objects.ToArray();
+        }
+        return (true, null);
+    }
+
     public (bool Success, string? Reason) TryApplyPlatforms(string connectionId, List<PlatformDto> platforms)
     {
         lock (_sync)
@@ -1546,15 +1639,21 @@ public sealed class GameWorld
             if (_phase == RoundPhase.Active)
                 return (false, "round_active");
 
-            if (!TryGetPlayerByConnection(connectionId, out var player) || player.Id != _starterPlayerId)
-                return (false, "not_authorized");
+            if (!CanEdit(connectionId)) return (false, "not_authorized");
 
             _platforms = platforms.Select(p => (p.Cx, p.SurfaceY, p.Width)).ToArray();
         }
         return (true, null);
     }
 
-    public (bool Success, string? Reason) TrySaveMap(string connectionId, string name, List<PlatformDto> platforms)
+    // Versioned map file format. Old maps were a bare PlatformDto array.
+    private sealed class MapFileDto
+    {
+        public List<PlatformDto>? Platforms { get; set; }
+        public List<SceneryObjectDto>? Scenery { get; set; }
+    }
+
+    public (bool Success, string? Reason) TrySaveMap(string connectionId, string name, List<PlatformDto> platforms, List<SceneryObjectDto> scenery)
     {
         if (!IsValidMapName(name))
             return (false, "invalid_name");
@@ -1564,17 +1663,18 @@ public sealed class GameWorld
             if (_phase == RoundPhase.Active)
                 return (false, "round_active");
 
-            if (!TryGetPlayerByConnection(connectionId, out var player) || player.Id != _starterPlayerId)
-                return (false, "not_authorized");
+            if (!CanEdit(connectionId)) return (false, "not_authorized");
 
             _platforms = platforms.Select(p => (p.Cx, p.SurfaceY, p.Width)).ToArray();
+            _sceneryObjects = scenery.ToArray();
         }
 
         try
         {
-            Directory.CreateDirectory("maps");
-            var json = JsonSerializer.Serialize(platforms, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(Path.Combine("maps", $"{name}.json"), json);
+            Directory.CreateDirectory(_mapsDirectory);
+            var mapFile = new MapFileDto { Platforms = platforms, Scenery = scenery };
+            var json = JsonSerializer.Serialize(mapFile, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(Path.Combine(_mapsDirectory, $"{name}.json"), json);
         }
         catch { }
 
@@ -1595,20 +1695,33 @@ public sealed class GameWorld
                 return (false, "not_authorized");
         }
 
-        List<PlatformDto>? loaded;
+        string json;
         try
         {
-            var path = Path.Combine("maps", $"{name}.json");
+            var path = Path.Combine(_mapsDirectory, $"{name}.json");
             if (!File.Exists(path)) return (false, "not_found");
-            var json = File.ReadAllText(path);
-            loaded = JsonSerializer.Deserialize<List<PlatformDto>>(json);
-            if (loaded is null) return (false, "invalid_file");
+            json = File.ReadAllText(path);
         }
         catch { return (false, "invalid_file"); }
 
+        // Try new versioned format; fall back to legacy bare-array format.
+        MapFileDto? mapFile = null;
+        try { mapFile = JsonSerializer.Deserialize<MapFileDto>(json); } catch { }
+        if (mapFile?.Platforms == null)
+        {
+            try
+            {
+                var legacy = JsonSerializer.Deserialize<List<PlatformDto>>(json);
+                if (legacy != null) mapFile = new MapFileDto { Platforms = legacy, Scenery = null };
+            }
+            catch { return (false, "invalid_file"); }
+        }
+        if (mapFile?.Platforms == null) return (false, "invalid_file");
+
         lock (_sync)
         {
-            _platforms = loaded.Select(p => (p.Cx, p.SurfaceY, p.Width)).ToArray();
+            _platforms = mapFile.Platforms.Select(p => (p.Cx, p.SurfaceY, p.Width)).ToArray();
+            _sceneryObjects = mapFile.Scenery?.ToArray() ?? [];
         }
 
         return (true, null);
@@ -1618,8 +1731,8 @@ public sealed class GameWorld
     {
         try
         {
-            if (!Directory.Exists("maps")) return Array.Empty<string>();
-            return Directory.GetFiles("maps", "*.json")
+            if (!Directory.Exists(_mapsDirectory)) return Array.Empty<string>();
+            return Directory.GetFiles(_mapsDirectory, "*.json")
                 .Select(Path.GetFileNameWithoutExtension)
                 .Where(n => n is not null)
                 .Order()

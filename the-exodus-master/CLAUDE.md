@@ -11,7 +11,7 @@ Browser-based multiplayer desert game. Players move, shoot fireballs, and knock 
 - **Backend:** ASP.NET Core 8 minimal API + SignalR hub (`src/Server/`)
 - **Frontend:** TypeScript + Phaser 3 + Vite (`src/Client/`)
 - **Port:** 55435
-- **Current version:** 0.1.0 (in `src/Client/package.json`)
+- **Current version:** 2.0.0 (in `src/Client/package.json`)
 
 ---
 

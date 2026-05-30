@@ -16,6 +16,14 @@ export default defineConfig({
         target: backendUrl,
         changeOrigin: true,
         ws: true
+      },
+      "/api": {
+        target: backendUrl,
+        changeOrigin: true
+      },
+      "/sprites": {
+        target: backendUrl,
+        changeOrigin: true
       }
     }
   },

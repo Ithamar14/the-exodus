@@ -81,6 +81,16 @@ public sealed class GameHub(GameWorld world) : Hub
         await Clients.Caller.SendAsync("MapList", new MapListPayload(maps));
         var spawns = _world.GetMonsterSpawns();
         await Clients.Caller.SendAsync("MonsterSpawnsUpdated", new MonsterSpawnsUpdatedPayload(spawns));
+        var scenery = _world.GetSceneryObjects();
+        await Clients.Caller.SendAsync("SceneryObjectsUpdated", new SceneryObjectsUpdatedPayload(scenery));
+    }
+
+    public async Task ApplyScenery(ApplySceneryRequest request)
+    {
+        var result = _world.TryApplyScenery(Context.ConnectionId, request.Objects);
+        if (!result.Success) return;
+        var scenery = _world.GetSceneryObjects();
+        await Clients.All.SendAsync("SceneryObjectsUpdated", new SceneryObjectsUpdatedPayload(scenery));
     }
 
     public async Task UpdateRules(UpdateRulesRequest request)
@@ -113,7 +123,7 @@ public sealed class GameHub(GameWorld world) : Hub
 
     public async Task SaveMap(SaveMapRequest request)
     {
-        var result = _world.TrySaveMap(Context.ConnectionId, request.Name, request.Platforms);
+        var result = _world.TrySaveMap(Context.ConnectionId, request.Name, request.Platforms, request.SceneryObjects);
         if (!result.Success)
         {
             await Clients.Caller.SendAsync("MapActionRejected", new MapActionRejected("save", result.Reason ?? "unknown"));
@@ -122,6 +132,8 @@ public sealed class GameHub(GameWorld world) : Hub
 
         var platforms = _world.GetPlatforms();
         await Clients.All.SendAsync("PlatformsUpdated", new PlatformsUpdatedPayload(platforms));
+        var scenery = _world.GetSceneryObjects();
+        await Clients.All.SendAsync("SceneryObjectsUpdated", new SceneryObjectsUpdatedPayload(scenery));
         var maps = _world.ListMaps();
         await Clients.Caller.SendAsync("MapList", new MapListPayload(maps));
     }
@@ -145,6 +157,8 @@ public sealed class GameHub(GameWorld world) : Hub
 
         var platforms = _world.GetPlatforms();
         await Clients.All.SendAsync("PlatformsUpdated", new PlatformsUpdatedPayload(platforms));
+        var scenery = _world.GetSceneryObjects();
+        await Clients.All.SendAsync("SceneryObjectsUpdated", new SceneryObjectsUpdatedPayload(scenery));
     }
 
     public override Task OnDisconnectedAsync(Exception? exception)

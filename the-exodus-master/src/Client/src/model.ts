@@ -1,6 +1,16 @@
-export const WORLD_WIDTH = 1024;
-export const WORLD_HEIGHT = 768;
-export const GROUND_Y = 680; // player center Y when standing (matches server GroundY = WorldHeight - 88)
+export let WORLD_WIDTH  = 3072;
+export let WORLD_HEIGHT = 2304;
+export let GROUND_Y     = WORLD_HEIGHT - 61; // feet Y when standing on ground
+
+export function updateWorldSize(w: number, h: number): void {
+  WORLD_WIDTH  = w;
+  WORLD_HEIGHT = h;
+  GROUND_Y     = h - 61;
+}
+
+export const VIEWPORT_WIDTH  = 1024;
+export const VIEWPORT_HEIGHT = 768;
+
 export const PLAYER_COLLISION_RADIUS = 30;
 export const PLAYER_BUMP_DISTANCE = 18;
 export const PLAYER_COLOR_PALETTE = [
@@ -9,7 +19,7 @@ export const PLAYER_COLOR_PALETTE = [
   0x2a9d8f,
   0x8d6cab,
   0xf4a261,
-  0x4ecdc4
+  0x29d1c5
 ] as const;
 
 export type PlayerSnapshot = {
@@ -143,6 +153,21 @@ export type MonsterSpawnDto = {
   id: string;
   x: number;
   y: number;
+};
+
+export type SceneryObjectDto = {
+  id: string;
+  spriteKey: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  solid: boolean;
+};
+
+export type SceneryLibraryEntry = {
+  key: string;
+  solid: boolean;
 };
 
 export type WorldSnapshot = {
